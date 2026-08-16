@@ -1,5 +1,4 @@
 <resources>
     <string name="app_name">自动分辨率</string>
     <string name="monitor_notification_text">正在等待显示器插入…</string>
-    <string name="overlay_permission_notification_text">请授予悬浮窗权限，音量键控制屏幕功能不可用</string>
 </resources>

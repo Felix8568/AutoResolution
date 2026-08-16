@@ -6,11 +6,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import kotlin.system.exitProcess
 
-/**
- * 通用 Shell 命令执行器（Shizuku UserService）。
- * 在 shell/root 权限进程里跑 [exec]，用于 wm size、dumpsys 等需要提权的命令。
- * App 进程通过 [IShellService] AIDL 接口远程调用。
- */
+/** 通用 Shell 命令执行器（Shizuku UserService），供 App 进程远程调用提权命令 */
 class ShellService : IShellService.Stub() {
 
     override fun exec(command: String): String {

@@ -1,5 +1,6 @@
 package top.loongway.autoresolution
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.Service
@@ -8,14 +9,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import top.loongway.autoresolution.R
 
-/**
- * Android 前台服务。维持后台存活，驱动 [ResolutionManager] 的启停。
- * 通知栏实时显示外接显示器型号。
- */
+/** Android 前台服务：维持后台存活，驱动 [ResolutionManager]，通知栏显示外接显示器型号 */
 class DisplayMonitorService : Service() {
 
     companion object {
@@ -33,6 +30,13 @@ class DisplayMonitorService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, DisplayMonitorService::class.java))
+        }
+
+        /** 服务是否正在运行（getRunningServices 在 API 26+ 返回本应用自己的服务） */
+        fun isRunning(context: Context): Boolean {
+            val am = context.getSystemService(ActivityManager::class.java)
+            return am.getRunningServices(Int.MAX_VALUE)
+                .any { it.service.className == DisplayMonitorService::class.java.name }
         }
     }
 
@@ -65,15 +69,11 @@ class DisplayMonitorService : Service() {
 
     private fun buildNotification(): Notification {
         val display = ResolutionManager.connectedDisplayName
-        val text = if (!Settings.canDrawOverlays(this)) {
-            getString(R.string.overlay_permission_notification_text)
-        } else {
-            display?.let { "已连接$it" } ?: getString(R.string.monitor_notification_text)
-        }
+        val text = display?.let { "已连接$it" } ?: getString(R.string.monitor_notification_text)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.mipmap.ic_launcher_foreground)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)

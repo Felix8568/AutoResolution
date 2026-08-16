@@ -6,33 +6,36 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import android.view.Display
-import android.view.KeyEvent
 import rikka.shizuku.Shizuku
 import rikka.shizuku.Shizuku.UserServiceArgs
 import top.loongway.autoresolution.shizuku.IDisplayControl
 import top.loongway.autoresolution.shizuku.IShellService
 import top.loongway.autoresolution.shizuku.service.DisplayControlService
 
-/**
- * 全局协调中心。
- *
- * - 管理 2 个 Shizuku UserService 的绑定/解绑
- * - 监听外接显示器插拔（DisplayManager），自动切换分辨率
- * - 悬浮窗拦截音量键，控制屏幕电源开关（无需 Shizuku）
- *
- * 对外暴露 [start] / [stop] / [turnScreenOff] / [turnScreenOn] 给 Android Service 调用。
- */
+/** 全局协调中心：管理 Shizuku UserService 绑定、显示器监听、分辨率切换与屏幕电源控制。 */
 object ResolutionManager {
 
-    private const val TARGET_WIDTH = 1080
-    private const val TARGET_HEIGHT = 1920
     private const val TAG = "ResolutionManager"
+    private const val PREFS_NAME = "resolution_settings"
+    private const val KEY_WIDTH = "target_width"
+    private const val KEY_HEIGHT = "target_height"
+    private const val KEY_AUTO_BLACK_SCREEN = "auto_black_screen"
+
+    /** 目标分辨率，可通过 [setTargetResolution] 修改并持久化到 SharedPreferences */
+    var targetWidth = 1080
+        private set
+    var targetHeight = 1920
+        private set
+
+    /** 检测到外接显示器时自动黑屏（仅外接显示器输出） */
+    var autoBlackScreen = false
+        private set
 
     private lateinit var appContext: Context
     private val handler = Handler(Looper.getMainLooper())
@@ -47,9 +50,6 @@ object ResolutionManager {
     private var dcConn: ServiceConnection? = null
     private var dcArgs: UserServiceArgs? = null
 
-    // Volume key window (overlay focus, no Shizuku needed)
-    private var volumeKeyWindow: VolumeKeyWindowHost? = null
-
     private var displayManager: DisplayManager? = null
 
     @Volatile var isStarted = false
@@ -60,18 +60,71 @@ object ResolutionManager {
 
     fun init(application: Application) {
         appContext = application.applicationContext
+        loadSettings()
         Shizuku.addBinderDeadListener {
             shellService = null
             displayControl = null
         }
     }
 
+    /** 修改目标分辨率并持久化；显示器已连接时立即应用新分辨率 */
+    fun setTargetResolution(width: Int, height: Int) {
+        targetWidth = width
+        targetHeight = height
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_WIDTH, width)
+            .putInt(KEY_HEIGHT, height)
+            .apply()
+        refresh()
+    }
+
+    /** 切换「检测到显示器自动黑屏」并持久化；显示器已连接时立即生效 */
+    fun setAutoBlackScreen(enabled: Boolean) {
+        autoBlackScreen = enabled
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_AUTO_BLACK_SCREEN, enabled)
+            .apply()
+        refresh()
+    }
+
+    /** 还原目标分辨率为系统屏幕分辨率并持久化 */
+    fun resetTargetResolution() {
+        val (w, h) = systemScreenResolution()
+        setTargetResolution(w, h)
+    }
+
+    private fun loadSettings() {
+        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.contains(KEY_WIDTH) && prefs.contains(KEY_HEIGHT)) {
+            targetWidth = prefs.getInt(KEY_WIDTH, targetWidth)
+            targetHeight = prefs.getInt(KEY_HEIGHT, targetHeight)
+        } else {
+            // 首次使用：默认目标分辨率 = 系统屏幕分辨率，并持久化
+            val (w, h) = systemScreenResolution()
+            targetWidth = w
+            targetHeight = h
+            prefs.edit().putInt(KEY_WIDTH, w).putInt(KEY_HEIGHT, h).apply()
+        }
+        autoBlackScreen = prefs.getBoolean(KEY_AUTO_BLACK_SCREEN, false)
+    }
+
+    /** 主屏物理分辨率（Display.Mode 的物理尺寸，不受 wm size override 影响） */
+    fun systemScreenResolution(): Pair<Int, Int> {
+        val dm = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val display = dm.getDisplay(Display.DEFAULT_DISPLAY)
+            ?: return appContext.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
+        return display.mode.physicalWidth to display.mode.physicalHeight
+    }
+
     fun start() {
         if (isStarted) return
+        if (!PermissionChecker.check(appContext).allGranted) {
+            Log.w(TAG, "permissions not ready, monitor not started")
+            return
+        }
         isStarted = true
         bindShellService()
         bindDisplayControl()
-        startVolumeKeyWindow()
         registerDisplayListener()
     }
 
@@ -79,7 +132,6 @@ object ResolutionManager {
         isStarted = false
         shellService?.exec("wm size reset")
         unregisterDisplayListener()
-        destroyVolumeKeyWindow()
         unbindShellService()
         unbindDisplayControl()
     }
@@ -88,13 +140,27 @@ object ResolutionManager {
         if (isStarted) {
             bindShellService()
             bindDisplayControl()
-            startVolumeKeyWindow()
+        }
+    }
+
+    /** 通过 Shizuku 自动授予通知/电池优化权限（幂等），完成后主线程回调 [onDone] */
+    fun ensureShizukuPermissions(onDone: (() -> Unit)? = null) {
+        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
+        val existing = shellService
+        if (existing != null) {
+            // exec 为同步阻塞，放到后台线程执行
+            Thread {
+                grantPermissions(existing)
+                handler.post { onDone?.invoke() }
+            }.start()
+        } else {
+            bindShellService(onReady = onDone) // 绑定成功后执行授予并回调
         }
     }
 
     // ---- Shell Service ----
 
-    private fun bindShellService() {
+    private fun bindShellService(onReady: (() -> Unit)? = null) {
         if (shellService != null) return
         if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
 
@@ -102,11 +168,23 @@ object ResolutionManager {
         shellConn = ServiceConn(
             onConnected = { binder ->
                 shellService = IShellService.Stub.asInterface(binder)
-                refresh()
+                grantPermissions(shellService!!)
+                handler.post {
+                    refresh()
+                    onReady?.invoke()
+                }
             },
             onDisconnected = { shellService = null }
         )
         Shizuku.bindUserService(shellArgs!!, shellConn!!)
+    }
+
+    /** 静默授予通知权限（pm grant 才能联动通知开关）与电池优化白名单，幂等 */
+    private fun grantPermissions(shell: IShellService) {
+        val pkg = appContext.packageName
+        Log.d(TAG, "granting system permissions for $pkg via Shizuku")
+        Log.d(TAG, shell.exec("pm grant $pkg android.permission.POST_NOTIFICATIONS"))
+        Log.d(TAG, shell.exec("cmd deviceidle whitelist +$pkg"))
     }
 
     private fun unbindShellService() {
@@ -136,31 +214,6 @@ object ResolutionManager {
         val a = dcArgs ?: return; val c = dcConn ?: return
         Shizuku.unbindUserService(a, c, true)
         dcArgs = null; dcConn = null; displayControl = null
-    }
-
-    // ---- Volume key window ----
-
-    private fun startVolumeKeyWindow() {
-        if (!Settings.canDrawOverlays(appContext)) {
-            Log.w(TAG, "SYSTEM_ALERT_WINDOW not granted, volume key control disabled")
-            return
-        }
-        if (volumeKeyWindow == null) {
-            volumeKeyWindow = VolumeKeyWindowHost(appContext) { keyCode ->
-                val hasExternal = displayManager?.displays?.any { it.isExternal() } ?: return@VolumeKeyWindowHost
-                if (!hasExternal) return@VolumeKeyWindowHost
-                when (keyCode) {
-                    KeyEvent.KEYCODE_VOLUME_UP -> turnScreenOff()
-                    KeyEvent.KEYCODE_VOLUME_DOWN -> turnScreenOn()
-                }
-            }
-        }
-        volumeKeyWindow?.create()
-    }
-
-    private fun destroyVolumeKeyWindow() {
-        volumeKeyWindow?.destroy()
-        volumeKeyWindow = null
     }
 
     // ---- Screen control ----
@@ -200,7 +253,9 @@ object ResolutionManager {
 
         if (ext != null) {
             connectedDisplayName = queryDisplayName()
-            shellService?.exec("wm size ${TARGET_WIDTH}x${TARGET_HEIGHT}")
+            shellService?.exec("wm size ${targetWidth}x${targetHeight}")
+            // 开关开启时：外接显示器接入即黑屏（仅外接显示器输出）
+            if (autoBlackScreen) turnScreenOff()
         } else {
             connectedDisplayName = null
             shellService?.exec("wm size reset")

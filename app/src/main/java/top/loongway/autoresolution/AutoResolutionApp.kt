@@ -7,9 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import rikka.shizuku.Shizuku
 
-/**
- * Application 入口。Shizuku binder 就绪时自动启动前台服务，无需用户手动操作。
- */
+/** Application 入口：Shizuku binder 就绪且权限齐全时自动启动服务 */
 class AutoResolutionApp : Application() {
 
     override fun onCreate() {
@@ -29,8 +27,12 @@ class AutoResolutionApp : Application() {
             // Shizuku binder 还没有准备好，监听者会在后续重试
             return
         }
-        ResolutionManager.rebind()
-        DisplayMonitorService.start(this)
+        // 先自动授予缺失权限（幂等），再判断是否齐全，齐全才启动服务
+        ResolutionManager.ensureShizukuPermissions {
+            if (!PermissionChecker.check(this).allGranted) return@ensureShizukuPermissions
+            ResolutionManager.rebind()
+            DisplayMonitorService.start(this)
+        }
     }
 
     private fun createNotificationChannel() {
