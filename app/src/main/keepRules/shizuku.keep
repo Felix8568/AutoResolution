@@ -1,0 +1,3 @@
+# Shizuku IPC 相关类，全部保留。
+# UserService 由 Shizuku 按类名字符串反射加载；AIDL Stub 用于 Binder 跨进程通信。
+-keep class top.loongway.autoresolution.shizuku.** { *; }
