@@ -2,30 +2,24 @@ package top.loongway.autoresolution.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// ---- MIUI / HyperOS 风格配色 ----
+// ---- HUD 暗黑霓虹配色 ----
 
-// 主色
-val MiuiBlue = Color(0xFF0A84FF)
-val MiuiBlueDark = Color(0xFF3A9BFF)
+// 背景与面板
+val HudBg = Color(0xFF0A0A0A)          // 页面近黑背景
+val HudPanel = Color(0xFF0E1626)       // 深藏蓝面板
+val HudPanelDim = Color(0xFF111C2E)    // 次级面板/胶囊底
 
-// 背景与卡片
-val MiuiBackground = Color(0xFFF5F5F7)   // 浅灰页面背景
-val MiuiBackgroundDark = Color(0xFF17181A)
-val MiuiSurface = Color(0xFFFFFFFF)      // 白色卡片
-val MiuiSurfaceDark = Color(0xFF232426)
+// 强调色
+val HudRed = Color(0xFFFF2A3C)         // 霓虹红（主强调）
+val HudRedDim = Color(0x33FF2A3C)      // 霓虹红低透明度
+val HudBlue = Color(0xFF3AD6FF)        // 霓虹蓝（辅助）
+val HudGreen = Color(0xFF00E676)       // 状态正常
+val HudStatusRed = Color(0xFFFF5252)   // 状态异常
 
 // 文字
-val MiuiTextPrimary = Color(0xFF1A1A1A)
-val MiuiTextPrimaryDark = Color(0xFFE5E5E5)
-val MiuiTextSecondary = Color(0xFF8A8A8A)
-val MiuiTextSecondaryDark = Color(0xFF9A9A9A)
+val HudTextPrimary = Color(0xFFF2F4F8)
+val HudTextSecondary = Color(0xFF8A93A6)
 
-// 输入框
-val MiuiInputBg = Color(0xFFF2F3F5)      // 浅灰圆角容器
-val MiuiInputBgDark = Color(0xFF2C2D2F)
-
-// 状态色
-val MiuiGreen = Color(0xFF34C759)
-val MiuiRed = Color(0xFFFF3B30)
-val MiuiDivider = Color(0xFFF0F0F0)
-val MiuiDividerDark = Color(0xFF2E2F31)
+// 描边与分隔
+val HudStroke = Color(0x1FFFFFFF)      // 半透明白描边
+val HudDivider = Color(0x14FFFFFF)

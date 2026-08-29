@@ -1,6 +1,5 @@
 package top.loongway.autoresolution.trackpad
 
-import android.app.Activity
 import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Context
@@ -54,7 +53,7 @@ object AppLauncher {
     }
 
     /** 在 [displayId] 对应的副屏上启动应用 */
-    fun launchOnDisplay(activity: Activity, app: AppInfo, displayId: Int) {
+    fun launchOnDisplay(context: Context, app: AppInfo, displayId: Int) {
         val component = ComponentName(app.packageName, app.activityName)
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
@@ -71,16 +70,16 @@ object AppLauncher {
         ) { result ->
             if (result.startsWith("exit=0")) return@execShellAsync
             Log.w(TAG, "shizuku am start failed: $result")
-            launchViaFramework(activity, intent, displayId)
+            launchViaFramework(context, intent, displayId)
         }
     }
 
     /** ② 降级：框架跨屏路线（无需 Shizuku，但部分 ROM 会弹确认框） */
-    private fun launchViaFramework(activity: Activity, intent: Intent, displayId: Int) {
+    private fun launchViaFramework(context: Context, intent: Intent, displayId: Int) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
         try {
             val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
-            activity.startActivity(intent, options.toBundle())
+            context.startActivity(intent, options.toBundle())
         } catch (e: Exception) {
             Log.e(TAG, "framework cross-display launch failed", e)
         }

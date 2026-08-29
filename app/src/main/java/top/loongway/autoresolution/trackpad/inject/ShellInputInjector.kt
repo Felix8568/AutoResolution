@@ -21,6 +21,11 @@ object ShellInputInjector {
         ResolutionManager.execShellAsync("input -d $displayId tap $x $y")
     }
 
+    /** 返回键：input -d <displayId> keyevent KEYCODE_BACK，控制副屏应用返回 */
+    fun back(displayId: Int) {
+        ResolutionManager.execShellAsync("input -d $displayId keyevent KEYCODE_BACK")
+    }
+
     /**
      * 用 swipe 模拟拖拽滚动（input 命令没有真滚轮语义），方向换算：
      *   vTicks > 0（内容向下翻）→ 手指向上滑 → 终点 y 减小

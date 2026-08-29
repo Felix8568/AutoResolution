@@ -33,11 +33,15 @@ object InputInjector {
         Shizuku.addBinderDeadListener { service = null }
     }
 
-    /** 幂等绑定；未授权时静默跳过（授权流程走完后会再次调用） */
+    /** 幂等绑定；未授权或 Shizuku 未运行时静默跳过（授权流程走完后会再次调用） */
     fun bind() {
         val ctx = appContext ?: return
         if (service != null) return
-        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
+        // binder 未就绪时 checkSelfPermission 会抛 IllegalStateException，先探活
+        if (!Shizuku.pingBinder()) return
+        if (runCatching { Shizuku.checkSelfPermission() }.getOrDefault(PackageManager.PERMISSION_DENIED)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
 
         // version 变更会让 Shizuku 杀掉旧服务进程、用新 APK 代码重建
         //（直接覆盖安装时旧进程会继续跑旧代码，必须提版本才生效）

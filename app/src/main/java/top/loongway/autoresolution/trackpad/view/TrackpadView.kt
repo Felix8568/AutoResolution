@@ -37,11 +37,11 @@ class TrackpadView @JvmOverloads constructor(
          */
         const val SENSITIVITY = 1.6f
 
-        /** 滚动格阈值：边缘区每累计滑动该像素数产生 1 格滚动 */
-        const val SCROLL_TICK_PX = 48f
-
         /** 轻点判定：按下到抬起的最长时长（ms） */
         const val TAP_MAX_DURATION_MS = 220L
+
+        /** 原地长按判定：按住不动超过该时长进入拖动模式（ms） */
+        const val LONG_PRESS_MS = 500L
     }
 
     var listener: TrackpadListener? = null
@@ -61,14 +61,23 @@ class TrackpadView @JvmOverloads constructor(
     private var lastY = 0f
     private var downTime = 0L
     private var movedBeyondSlop = false     // 位移是否已超出轻点判定阈值
-    private var scrollAccum = 0f            // 滚动像素累计器（保留不足一格的余量）
     private var multiTouch = false          // 出现多指后本次手势作废，直到全部抬起
 
-    // ---- 分区提示绘制 ----
+    // ---- 原地长按拖动（按住不动 → 在副屏按下"虚拟手指"，随后移动即拖拽） ----
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var dragging = false            // 拖动进行中（虚拟手指已按下）
+    private val longPressRunnable = Runnable {
+        // 按住未移动也未抬手：进入拖动模式（触点当前位置按下虚拟手指）
+        if (!multiTouch && !movedBeyondSlop && zone == TrackpadZone.CENTER) {
+            dragging = true
+            listener?.onSwipeBegin(TrackpadZone.CENTER, 0.5f, 0.5f)
+        }
+    }
+
+    // ---- 分区提示绘制（HUD 霓虹红风格） ----
     private val density = resources.displayMetrics.density
-    private val zonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x0DFFFFFF }   // 边缘分区底色（5% 白）
-    private val boundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x24FFFFFF }  // 分区分界线
-    private val centerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x26FFFFFF } // 中心准星
+    private val zonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x14FF2A3C }   // 边缘分区底色（低透明度红）
+    private val boundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FF2A3C }  // 分区分界线
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -79,16 +88,28 @@ class TrackpadView @JvmOverloads constructor(
                 lastY = downY
                 downTime = event.downTime
                 movedBeyondSlop = false
-                scrollAccum = 0f
                 multiTouch = false
                 // 分区锁定：以按下瞬间的位置决定本次手势职责；
                 // 手指中途划入其它分区不切换指令类型（避免移动/滚动互相窜扰）
                 zone = TrackpadZone.of(event.x, event.y, width, height)
+                dragging = false
+                // 中心区原地长按 → 拖动模式；边缘区 = 真实滑动手势：按下瞬间按按压位置
+                // 重定位触点（对应轴），再按下"虚拟手指"，滑动跟手、抬起结束
+                if (zone == TrackpadZone.CENTER) {
+                    handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
+                } else {
+                    listener?.onSwipeBegin(
+                        zone,
+                        event.x / width.coerceAtLeast(1),
+                        event.y / height.coerceAtLeast(1)
+                    )
+                }
                 listener?.onTouchActive()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                // 双指/多指不在需求范围：本次手势作废，等全部抬起后重新开始
+                // 双指/多指不在需求范围：本次手势作废（先抬走已按下的虚拟手指），等全部抬起后重新开始
+                if (!multiTouch && zone != TrackpadZone.CENTER) listener?.onSwipeEnd()
                 multiTouch = true
             }
 
@@ -102,47 +123,67 @@ class TrackpadView @JvmOverloads constructor(
                 lastX = event.x
                 lastY = event.y
 
-                // 轻点排除：累计位移一旦超出 touchSlop，中心区手势不再可能是“点击”。
-                // 边缘滚动区没有点击语义，不设阈值 —— 立即累计，轻扫也能触发滚动
+                // 轻点排除：累计位移一旦超出 touchSlop，中心区手势不再可能是“点击”，
+                // 同时取消长按拖动计时（非原地长按 = 正常滑动）
                 if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) {
+                    if (!movedBeyondSlop) handler.removeCallbacks(longPressRunnable)
                     movedBeyondSlop = true
                 }
 
                 when (zone) {
                     TrackpadZone.CENTER -> {
+                        // 长按拖动中：位移增量直接驱动副屏"虚拟手指"
+                        if (dragging) {
+                            dispatchSwipe(dx, dy)
+                            return true
+                        }
                         if (!movedBeyondSlop) return true
                         // 中心区：位移增量 → 触点移动
                         dispatchMove(dx, dy)
                     }
 
-                    TrackpadZone.LEFT_EDGE, TrackpadZone.RIGHT_EDGE ->
-                        // 左右边缘：竖直位移 → 垂直滚动。
-                        // 取负号统一语义：手指上滑(dy<0) → +ticks（内容向下翻，同滚轮下滚）
-                        dispatchScroll(-dy, horizontal = false)
-
-                    TrackpadZone.BOTTOM_EDGE ->
-                        // 底部边缘：水平位移 → 水平滚动。
-                        // 手指左滑(dx<0) → +ticks（内容向右翻，同滚轮右倾）
-                        dispatchScroll(-dx, horizontal = true)
+                    // 边缘区：真实滑动手势 —— 位移增量直接转为副屏"虚拟手指"移动，
+                    // 与中心区相同的换算（占触控板比例 × 灵敏度），跟手感一致。
+                    // 同样过 slop 门槛：按下不动直接抬起 = 不注入任何事件（侧边不响应点击）
+                    TrackpadZone.LEFT_EDGE, TrackpadZone.RIGHT_EDGE,
+                    TrackpadZone.BOTTOM_EDGE -> {
+                        if (!movedBeyondSlop) return true
+                        dispatchSwipe(dx, dy)
+                    }
                 }
             }
 
             MotionEvent.ACTION_UP -> {
+                handler.removeCallbacks(longPressRunnable)
                 if (multiTouch) {
                     resetGesture()
                     return true
                 }
                 listener?.onTouchActive()
+                if (dragging) {
+                    // 长按拖动结束：虚拟手指抬起
+                    dragging = false
+                    listener?.onSwipeEnd()
+                    return true
+                }
+                if (zone != TrackpadZone.CENTER) {
+                    // 边缘滑动结束：虚拟手指抬起
+                    listener?.onSwipeEnd()
+                    return true
+                }
                 // 轻点判定三条件：中心区 + 位移未超 slop + 时长够短
                 val duration = event.eventTime - downTime
-                if (zone == TrackpadZone.CENTER && !movedBeyondSlop && duration <= TAP_MAX_DURATION_MS) {
+                if (!movedBeyondSlop && duration <= TAP_MAX_DURATION_MS) {
                     // 归一化轻点位置：与分辨率无关，交给接收方自行映射
                     listener?.onTap(event.x / width.coerceAtLeast(1), event.y / height.coerceAtLeast(1))
                 }
             }
 
             MotionEvent.ACTION_CANCEL -> {
-                // 系统回收手势（如来电弹窗抢焦点）：清空状态，不发任何指令
+                // 系统回收手势（如来电弹窗抢焦点）：抬走虚拟手指并清空状态，不发任何指令
+                handler.removeCallbacks(longPressRunnable)
+                if (dragging || (!multiTouch && zone != TrackpadZone.CENTER)) listener?.onSwipeEnd()
+                dragging = false
                 resetGesture()
             }
         }
@@ -153,7 +194,6 @@ class TrackpadView @JvmOverloads constructor(
     private fun resetGesture() {
         movedBeyondSlop = false
         multiTouch = false
-        scrollAccum = 0f
     }
 
     /**
@@ -167,18 +207,10 @@ class TrackpadView @JvmOverloads constructor(
         listener?.onCursorMove(dx / width * SENSITIVITY, dy / height * SENSITIVITY)
     }
 
-    /**
-     * 边缘区：像素位移 → 滚动格（tick）。累计器模式：
-     * delta 先入账，满 [SCROLL_TICK_PX] 发出 1 格并扣除，余量保留到下次，
-     * 保证慢速滑动攒够一格后同样能触发。
-     */
-    private fun dispatchScroll(delta: Float, horizontal: Boolean) {
-        scrollAccum += delta
-        val ticks = (scrollAccum / SCROLL_TICK_PX).toInt() // 向零取整：只消费整格
-        if (ticks == 0) return
-        scrollAccum -= ticks * SCROLL_TICK_PX              // 扣除已发出的整格，保留小数余量
-        if (horizontal) listener?.onHorizontalScroll(ticks)
-        else listener?.onVerticalScroll(ticks)
+    /** 边缘区滑动：归一化增量（同 dispatchMove 的两步换算）交给接收方驱动"虚拟手指" */
+    private fun dispatchSwipe(dx: Float, dy: Float) {
+        if (width <= 0 || height <= 0) return
+        listener?.onSwipeMove(dx / width * SENSITIVITY, dy / height * SENSITIVITY)
     }
 
     // ---- 绘制：分区提示 ----
@@ -224,7 +256,5 @@ class TrackpadView @JvmOverloads constructor(
         canvas.drawLine(leftBound, 0f, leftBound, bottomBound, boundPaint)
         canvas.drawLine(rightBound, 0f, rightBound, bottomBound, boundPaint)
         canvas.drawLine(0f, bottomBound, w, bottomBound, boundPaint)
-        // 中心准星：提示主操作区
-        canvas.drawCircle(w / 2f, h / 2f, 6f * density, centerPaint)
     }
 }

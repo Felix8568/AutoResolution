@@ -4,9 +4,13 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
+import android.view.MotionEvent
+import top.loongway.autoresolution.trackpad.gesture.TrackpadZone
+import top.loongway.autoresolution.trackpad.launcher.LauncherActivity
 import top.loongway.autoresolution.trackpad.a11y.CursorAccessibilityService
 import top.loongway.autoresolution.trackpad.inject.InputInjector
 import top.loongway.autoresolution.trackpad.inject.ShellInputInjector
@@ -33,7 +37,6 @@ object SecondaryDisplayController {
 
     private var appContext: Context? = null
     private var displayManager: DisplayManager? = null
-    private var presentation: CursorPresentation? = null
 
     /**
      * 触点窗口是否由无障碍服务承载（TYPE_ACCESSIBILITY_OVERLAY，可信 overlay）。
@@ -51,7 +54,14 @@ object SecondaryDisplayController {
     private var nx = 0.5f
     private var ny = 0.5f
 
-    private val cursorView: CursorView? get() = presentation?.cursorView
+    // ---- 滑动手势（虚拟手指）状态 ----
+    private var swiping = false
+    private var swipeZone = TrackpadZone.CENTER
+    private var swipeDownTime = 0L
+    private var swipeX = 0f
+    private var swipeY = 0f
+
+    private val cursorView: CursorView? get() = LauncherActivity.instanceCursorView()
 
     fun hasSecondaryDisplay(): Boolean = displayId != Display.INVALID_DISPLAY
 
@@ -83,46 +93,33 @@ object SecondaryDisplayController {
     }
 
     private fun attachIfPossible() {
-        if (presentation != null || a11yCursor) return
+        if (displayId != Display.INVALID_DISPLAY) return
         val ctx = appContext ?: return
         val dm = displayManager ?: return
         val display = dm.displays.firstOrNull { it.isTrackpadTarget() } ?: return
-        // 优先无障碍 overlay（可信 overlay，触摸穿透不被目标 App 拦截）
+        displayId = display.displayId
+        // 触点优先挂无障碍可信 overlay，不可用时内嵌在启动页 Activity 里兜底
         a11yCursor = CursorAccessibilityService.isAvailable() &&
             CursorAccessibilityService.attachCursor(display)
-        if (!a11yCursor) {
-            try {
-                CursorPresentation(ctx, display).also {
-                    it.show()
-                    presentation = it
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "attach cursor presentation failed", e)
-                return
-            }
-        }
-        displayId = display.displayId
+        // 副屏启动页：普通 Activity，应用盖上来、返回回落（Presentation 会压住应用）
+        LauncherActivity.startOnDisplay(ctx, display.displayId)
     }
 
     private fun detach() {
         if (a11yCursor) CursorAccessibilityService.detachCursor()
         a11yCursor = false
-        presentation?.dismiss()
-        presentation = null
+        LauncherActivity.finishInstance()
         displayId = Display.INVALID_DISPLAY
     }
 
     /**
-     * 无障碍服务刚连接（或触控板页回到前台）时调用：
-     * 若触点当前挂在本地兜底窗口上且无障碍已可用 → 热切换到可信 overlay。
-     * 没有这一步，用户先开触控板再开无障碍时，触点会一直停留在
-     * 本地窗口上，点击/滚动依旧被目标 App 拦截。
+     * 无障碍服务刚连接（或主界面回到前台）时调用：
+     * 触点若还挂在内嵌兜底视图上且无障碍已可用 → 重建副屏挂载，热切换到可信 overlay。
      */
     fun ensureCursorHostUpToDate() {
         if (displayId == Display.INVALID_DISPLAY || a11yCursor) return
         if (!CursorAccessibilityService.isAvailable()) return
-        presentation?.dismiss()
-        presentation = null
+        detach()
         attachIfPossible()
     }
 
@@ -139,6 +136,30 @@ object SecondaryDisplayController {
         return flags and Display.FLAG_PRESENTATION != 0
             || name.contains("HDMI", ignoreCase = true)
             || name.contains("DP", ignoreCase = true)
+    }
+
+    /** 启动页是否正在副屏前台（resumed；被其它应用覆盖时为 false） */
+    fun isLauncherTop(): Boolean = LauncherActivity.isTop()
+
+    /** 从启动页启动到副屏的应用包名（force-stop 关闭入口用） */
+    @Volatile
+    var secondaryAppPackage: String? = null
+        private set
+
+    /** 记录副屏当前打开的应用（启动页网格点击时回调） */
+    fun onAppLaunched(pkg: String) {
+        secondaryAppPackage = pkg
+    }
+
+    /** 直接关闭副屏当前应用（am force-stop），关闭后自然回落到启动页 */
+    fun closeSecondaryApp() {
+        val pkg = secondaryAppPackage ?: return
+        top.loongway.autoresolution.ResolutionManager.execShellAsync("am force-stop $pkg")
+    }
+
+    /** 启动页回到前台（副屏应用已自行退出）：清空应用记录 */
+    fun onLauncherResumed() {
+        secondaryAppPackage = null
     }
 
     // ---- 触控板指令入口（TrackpadActivity 转发进来） ----
@@ -164,6 +185,82 @@ object SecondaryDisplayController {
         if (!InputInjector.tap(displayId, px, py)) {
             ShellInputInjector.tap(displayId, px, py)
         }
+    }
+
+    /**
+     * 滑动手势（边缘区）：只按按压位置重定位触点（侧边区只动纵轴、底部区只动横轴）
+     * 并记录起点，**不立即注入按下**。真正的 ACTION_DOWN 推迟到首次移动时（见 [onSwipeMove]），
+     * 这样"按下不动直接抬起"不会在副屏产生任何事件（侧边不响应点击）。
+     */
+    fun onSwipeBegin(zone: TrackpadZone, pressNx: Float, pressNy: Float) {
+        onUserActive()
+        if (!hasSecondaryDisplay()) return
+        when (zone) {
+            TrackpadZone.LEFT_EDGE, TrackpadZone.RIGHT_EDGE -> ny = pressNy.coerceIn(0f, 1f)
+            TrackpadZone.BOTTOM_EDGE -> nx = pressNx.coerceIn(0f, 1f)
+            TrackpadZone.CENTER -> Unit
+        }
+        if (a11yCursor) CursorAccessibilityService.updateCursor(nx, ny, true)
+        else cursorView?.setNormalizedPosition(nx, ny)
+
+        val (px, py) = cursorPixelPosition() ?: return
+        swipeZone = zone
+        swipeDownTime = SystemClock.uptimeMillis()
+        swipeX = px.toFloat()
+        swipeY = py.toFloat()
+        swiping = false // 待滑动：首次移动才注入 ACTION_DOWN
+    }
+
+    /** 滑动移动：首次移动先补注入 ACTION_DOWN，之后归一化增量跟手注入 MOVE。
+     *  轴向锁定：侧边区只走纵轴、底部区只走横轴，保证可以沿边缘连续长滑。 */
+    fun onSwipeMove(dx: Float, dy: Float) {
+        if (!hasSecondaryDisplay()) return
+        onUserActive()
+        if (!swiping) {
+            swiping = true
+            injectSwipe(MotionEvent.ACTION_DOWN)
+        }
+        val (w, h) = displayRealSize() ?: return
+        // 轴向过滤：非本区轴向的增量为 0
+        val (edx, edy) = when (swipeZone) {
+            TrackpadZone.LEFT_EDGE, TrackpadZone.RIGHT_EDGE -> 0f to dy
+            TrackpadZone.BOTTOM_EDGE -> dx to 0f
+            TrackpadZone.CENTER -> dx to dy
+        }
+        swipeX = (swipeX + edx * w).coerceIn(0f, w - 1f)
+        swipeY = (swipeY + edy * h).coerceIn(0f, h - 1f)
+        // 触点跟随"虚拟手指"，视觉一致
+        nx = (swipeX / w).coerceIn(0f, 1f)
+        ny = (swipeY / h).coerceIn(0f, 1f)
+        if (a11yCursor) CursorAccessibilityService.updateCursor(nx, ny, true)
+        else cursorView?.setNormalizedPosition(nx, ny)
+        injectSwipe(MotionEvent.ACTION_MOVE)
+    }
+
+    fun onSwipeEnd() {
+        if (!swiping) return
+        swiping = false
+        injectSwipe(MotionEvent.ACTION_UP)
+    }
+
+    /** 注入单个触摸采样点（同一 downTime 串成一次完整手势） */
+    private fun injectSwipe(action: Int) {
+        if (!hasSecondaryDisplay()) return
+        val event = MotionEvent.obtain(
+            swipeDownTime, SystemClock.uptimeMillis(), action, swipeX, swipeY, 0 /* metaState */
+        )
+        if (!InputInjector.inject(event, displayId)) {
+            Log.w(TAG, "swipe inject failed (action=$action)")
+        }
+    }
+
+    /** 副屏真实像素尺寸（宽, 高） */
+    private fun displayRealSize(): Pair<Int, Int>? {
+        val display = displayManager?.getDisplay(displayId) ?: return null
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        return metrics.widthPixels to metrics.heightPixels
     }
 
     /** 垂直滚动：+ticks = 内容向下翻 */

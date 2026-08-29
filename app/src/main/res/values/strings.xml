@@ -1,7 +1,9 @@
 <resources>
-    <string name="app_name">自动分辨率</string>
+    <string name="app_name">AR副屏助手</string>
     <string name="monitor_notification_text">正在等待显示器插入…</string>
-    <string name="trackpad">触控板</string>
     <string name="a11y_cursor_service">副屏触点服务</string>
     <string name="a11y_cursor_desc">在外接显示器上渲染控制触点。开启后，触控板的点击与滚动可以穿透触点送达副屏上的应用。</string>
+    <string name="no_external_display">未检测到外接显示器</string>
+    <string name="app_info_title">关于与帮助</string>
+    <string name="app_info_text">将手机作为触控板，控制外接显示器：\n\n· 中部区域滑动移动触点，轻点即点击\n· 左右边缘上下滑滚动\n· 底部边缘左右滑横向滚动\n· 常用应用点击后跨屏启动到副屏\n\n需要 Shizuku 授权与无障碍触点服务。</string>
 </resources>

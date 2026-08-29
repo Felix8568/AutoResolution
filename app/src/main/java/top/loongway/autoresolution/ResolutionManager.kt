@@ -91,6 +91,13 @@ object ResolutionManager {
         unbindDisplayControl()
     }
 
+    /** Shizuku 是否已就绪且已授权（binder 未收到时 checkSelfPermission 会抛异常，先探活） */
+    private fun shizukuReady(): Boolean =
+        runCatching {
+            Shizuku.pingBinder() &&
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+
     fun rebind() {
         if (isStarted) {
             bindShellService()
@@ -100,7 +107,7 @@ object ResolutionManager {
 
     /** 通过 Shizuku 自动授予通知/电池优化权限（幂等），完成后主线程回调 [onDone] */
     fun ensureShizukuPermissions(onDone: (() -> Unit)? = null) {
-        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
+        if (!shizukuReady()) return
         val existing = shellService
         if (existing != null) {
             // exec 为同步阻塞，放到后台线程执行
@@ -137,7 +144,7 @@ object ResolutionManager {
 
     private fun bindShellService(onReady: (() -> Unit)? = null) {
         if (shellService != null) return
-        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
+        if (!shizukuReady()) return
 
         shellArgs = serviceArgs("top.loongway.autoresolution.shizuku.service.ShellService", "shell")
         shellConn = ServiceConn(
@@ -172,7 +179,7 @@ object ResolutionManager {
 
     private fun bindDisplayControl() {
         if (displayControl != null) return
-        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return
+        if (!shizukuReady()) return
 
         dcArgs = serviceArgs(
             "top.loongway.autoresolution.shizuku.service.DisplayControlService",

@@ -28,7 +28,7 @@ class CursorView(context: Context) : View(context) {
 
     companion object {
         /** 触点外半径（dp） */
-        private const val CURSOR_RADIUS_DP = 9f
+        private const val CURSOR_RADIUS_DP = 14f
 
         /** 渐变环宽度占外半径的比例 */
         private const val RING_WIDTH_RATIO = 0.55f
