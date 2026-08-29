@@ -8,20 +8,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import rikka.shizuku.Shizuku
+import top.loongway.autoresolution.trackpad.a11y.AccessibilityRepair
+import top.loongway.autoresolution.trackpad.a11y.CursorAccessibilityService
 
 /** 主界面 UI 状态（UDF：UI 发事件 → ViewModel → StateFlow → UI 重组） */
 data class MainUiState(
     val shizukuGranted: Boolean = false,
     val notification: Boolean = false,
     val batteryIgnored: Boolean = false,
+    val a11yCursorService: Boolean = false,
     val autoBlackScreen: Boolean = false,
-    val resolutionWidth: Int = 1080,
-    val resolutionHeight: Int = 1920,
-    val canReset: Boolean = false,
     val serviceRunning: Boolean = false,
 ) {
     val allGranted: Boolean get() = shizukuGranted && notification && batteryIgnored
-    val resolutionText: String get() = "${resolutionWidth}×${resolutionHeight}"
 }
 
 /** UI 事件（UDF：事件是 UI → ViewModel 的唯一通道） */
@@ -29,8 +28,6 @@ sealed interface MainEvent {
     data object RequestShizuku : MainEvent
     data object ToggleService : MainEvent
     data object ToggleAutoBlackScreen : MainEvent
-    data object ResetResolution : MainEvent
-    data class SaveResolution(val width: Int, val height: Int) : MainEvent
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -41,6 +38,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val appContext get() = getApplication<Application>()
 
     init {
+        // 无障碍服务连上/断开 → 实时刷新状态行
+        CursorAccessibilityService.onStateChanged = { refresh() }
         refresh()
     }
 
@@ -49,8 +48,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             MainEvent.RequestShizuku -> requestShizukuPermission()
             MainEvent.ToggleService -> toggleService()
             MainEvent.ToggleAutoBlackScreen -> toggleAutoBlackScreen()
-            MainEvent.ResetResolution -> resetResolution()
-            is MainEvent.SaveResolution -> saveResolution(event.width, event.height)
         }
     }
 
@@ -79,20 +76,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    private fun refresh() {
+    fun refresh() {
         val status = PermissionChecker.check(appContext)
-        val (sysW, sysH) = ResolutionManager.systemScreenResolution()
+        // 确保无障碍触点服务已启用且已绑定（未启用时 Shizuku 自动授权）
+        AccessibilityRepair.ensure()
         _uiState.update {
             it.copy(
                 shizukuGranted = status.shizuku,
                 notification = status.notification,
                 batteryIgnored = status.batteryIgnored,
+                a11yCursorService = CursorAccessibilityService.isAvailable(),
                 autoBlackScreen = ResolutionManager.autoBlackScreen,
-                resolutionWidth = ResolutionManager.targetWidth,
-                resolutionHeight = ResolutionManager.targetHeight,
-                // 与系统屏幕分辨率不同才允许「还原」
-                canReset = ResolutionManager.targetWidth != sysW ||
-                    ResolutionManager.targetHeight != sysH,
                 serviceRunning = DisplayMonitorService.isRunning(appContext),
             )
         }
@@ -108,18 +102,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun saveResolution(width: Int, height: Int) {
-        ResolutionManager.setTargetResolution(width, height)
-        refresh()
-    }
-
     private fun toggleAutoBlackScreen() {
         ResolutionManager.setAutoBlackScreen(!_uiState.value.autoBlackScreen)
-        refresh()
-    }
-
-    private fun resetResolution() {
-        ResolutionManager.resetTargetResolution()
         refresh()
     }
 

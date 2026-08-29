@@ -7,6 +7,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Android 11+ 应用可见性：允许查询启动器应用列表（副屏应用启动器用） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AutoResolutionApp"
         android:allowBackup="true"
@@ -29,6 +37,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".trackpad.TrackpadActivity"
+            android:exported="false"
+            android:label="@string/trackpad" />
+
+        <service
+            android:name=".trackpad.a11y.CursorAccessibilityService"
+            android:exported="false"
+            android:label="@string/a11y_cursor_service"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/cursor_accessibility_config" />
+        </service>
 
         <service
             android:name=".DisplayMonitorService"

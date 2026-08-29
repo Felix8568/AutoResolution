@@ -23,26 +23,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,11 +43,13 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import top.loongway.autoresolution.R
+import top.loongway.autoresolution.trackpad.TrackpadActivity
+import top.loongway.autoresolution.trackpad.a11y.AccessibilityRepair
+import top.loongway.autoresolution.trackpad.a11y.CursorAccessibilityService
 import top.loongway.autoresolution.ui.theme.AutoResolutionTheme
 import androidx.lifecycle.viewmodel.compose.viewModel
 import rikka.shizuku.Shizuku
@@ -124,7 +117,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainScreen(state: MainUiState, onEvent: (MainEvent) -> Unit) {
         val context = LocalContext.current
-        var showResolutionDialog by remember { mutableStateOf(false) }
 
         Box(Modifier.fillMaxSize().background(PageBg)) {
             Column(
@@ -157,18 +149,30 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(16.dp))
                     MiuiPrimaryButton(text = "授予 Shizuku 权限") { onEvent(MainEvent.RequestShizuku) }
                 } else {
-                    // 目标分辨率 + 自动黑屏开关
+                    // 自动黑屏开关
                     MiuiGroup {
-                        MiuiClickRow(
-                            title = "目标分辨率",
-                            rightContent = { RightValueText(state.resolutionText) }
-                        ) { showResolutionDialog = true }
-                        HorizontalDivider(color = DividerColor, thickness = 1.dp)
                         MiuiSwitchRow(
                             title = "检测到显示器自动黑屏",
                             subtitle = "推荐在使用触控板、飞鼠的情况下开启。",
                             checked = state.autoBlackScreen,
                             onCheckedChange = { onEvent(MainEvent.ToggleAutoBlackScreen) }
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // 触控板模式入口：主屏当触控板，副屏显示触点并接收注入事件
+                    MiuiGroup {
+                        MiuiClickRow(
+                            title = "触控板模式",
+                            rightContent = {
+                                Text("打开", color = AccentBlue, style = RowValueStyle)
+                            },
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, TrackpadActivity::class.java)
+                                )
+                            }
                         )
                     }
 
@@ -199,6 +203,30 @@ class MainActivity : ComponentActivity() {
                         PermissionRow("通知权限", state.notification, "前台服务通知")
                         HorizontalDivider(color = DividerColor, thickness = 1.dp)
                         PermissionRow("省电策略权限", state.batteryIgnored, "后台保活")
+                        HorizontalDivider(color = DividerColor, thickness = 1.dp)
+                        // 副屏触点服务：状态样式 + 点击触发 Shizuku 自动授权
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (!state.a11yCursorService) {
+                                        // Shizuku 自动授权；服务连接后由 onStateChanged 实时刷新状态行
+                                        AccessibilityRepair.enableNow()
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            StatusDot(state.a11yCursorService)
+                            Spacer(Modifier.size(10.dp))
+                            Text("副屏触点服务", color = TextPrimary, style = RowTitleStyle)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                if (state.a11yCursorService) "已开启" else "未开启",
+                                style = RowValueStyle,
+                                color = if (state.a11yCursorService) TextSecondary else MissingRed
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -236,17 +264,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        }
-
-        if (showResolutionDialog) {
-            ResolutionDialog(
-                initialWidth = state.resolutionWidth,
-                initialHeight = state.resolutionHeight,
-                canReset = state.canReset,
-                onConfirm = { w, h -> onEvent(MainEvent.SaveResolution(w, h)) },
-                onReset = { onEvent(MainEvent.ResetResolution) },
-                onDismiss = { showResolutionDialog = false }
-            )
         }
     }
 
@@ -351,12 +368,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 右侧值文本 */
-    @Composable
-    private fun RightValueText(value: String) {
-        Text(value, color = TextSecondary, style = RowValueStyle)
-    }
-
     /** 设置项行尾图标（ic_unfolding，统一 tint 着色，以组件中心渲染精确居中） */
     @Composable
     private fun RowArrowIcon(tint: Color) {
@@ -394,87 +405,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** MIUI 风格输入框：浅灰圆角容器、无边框、蓝色光标 */
-    @Composable
-    private fun MiuiTextField(
-        value: String,
-        onValueChange: (String) -> Unit,
-        label: String
-    ) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                unfocusedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                focusedBorderColor = Color.Transparent,
-                unfocusedBorderColor = Color.Transparent,
-                cursorColor = MaterialTheme.colorScheme.primary,
-                focusedLabelColor = TextSecondary,
-                unfocusedLabelColor = TextSecondary,
-            )
-        )
-    }
-
-    /** 分辨率修改对话框：按钮栏 [还原(可选)] [取消] [确定] */
-    @Composable
-    private fun ResolutionDialog(
-        initialWidth: Int,
-        initialHeight: Int,
-        canReset: Boolean,
-        onConfirm: (Int, Int) -> Unit,
-        onReset: () -> Unit,
-        onDismiss: () -> Unit
-    ) {
-        var width by remember { mutableStateOf(initialWidth.toString()) }
-        var height by remember { mutableStateOf(initialHeight.toString()) }
-
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("修改目标分辨率", fontSize = 18.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    MiuiTextField(
-                        value = width,
-                        onValueChange = { width = it.filter(Char::isDigit).take(5) },
-                        label = "宽度"
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    MiuiTextField(
-                        value = height,
-                        onValueChange = { height = it.filter(Char::isDigit).take(5) },
-                        label = "高度"
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val w = width.toIntOrNull()
-                        val h = height.toIntOrNull()
-                        if (w != null && h != null && w > 0 && h > 0) {
-                            onConfirm(w, h)
-                            onDismiss()
-                        }
-                    }
-                ) { Text("确定", color = AccentBlue) }
-            },
-            dismissButton = {
-                Row {
-                    // 仅当目标分辨率 != 系统屏幕分辨率时显示「还原」
-                    if (canReset) {
-                        TextButton(onClick = { onReset(); onDismiss() }) {
-                            Text("还原", color = AccentBlue)
-                        }
-                    }
-                    TextButton(onClick = onDismiss) { Text("取消", color = TextSecondary) }
-                }
-            }
-        )
-    }
 }

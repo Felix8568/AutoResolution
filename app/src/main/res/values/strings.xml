@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">自动分辨率</string>
     <string name="monitor_notification_text">正在等待显示器插入…</string>
+    <string name="trackpad">触控板</string>
+    <string name="a11y_cursor_service">副屏触点服务</string>
+    <string name="a11y_cursor_desc">在外接显示器上渲染控制触点。开启后，触控板的点击与滚动可以穿透触点送达副屏上的应用。</string>
 </resources>

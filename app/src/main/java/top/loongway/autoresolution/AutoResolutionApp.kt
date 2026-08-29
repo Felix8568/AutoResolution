@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.os.Build
 import rikka.shizuku.Shizuku
+import top.loongway.autoresolution.trackpad.a11y.AccessibilityRepair
+import top.loongway.autoresolution.trackpad.cursor.SecondaryDisplayController
+import top.loongway.autoresolution.trackpad.inject.InputInjector
 
 /** Application 入口：Shizuku binder 就绪且权限齐全时自动启动服务 */
 class AutoResolutionApp : Application() {
@@ -14,6 +17,9 @@ class AutoResolutionApp : Application() {
         super.onCreate()
 
         ResolutionManager.init(this)
+        InputInjector.init(this)
+        // 副屏触点控制器：随应用常驻，监听外接屏热插拔
+        SecondaryDisplayController.start(this)
         createNotificationChannel()
 
         Shizuku.addBinderReceivedListenerSticky { tryAutoStart() }
@@ -31,6 +37,9 @@ class AutoResolutionApp : Application() {
         ResolutionManager.ensureShizukuPermissions {
             if (!PermissionChecker.check(this).allGranted) return@ensureShizukuPermissions
             ResolutionManager.rebind()
+            InputInjector.bind() // 绑定触摸事件注入服务
+            // 无障碍触点服务：未启用自动授权、掉绑自动重绑（全部经 Shizuku）
+            AccessibilityRepair.ensure()
             DisplayMonitorService.start(this)
         }
     }

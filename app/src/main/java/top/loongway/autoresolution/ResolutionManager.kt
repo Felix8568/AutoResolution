@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -18,20 +17,12 @@ import top.loongway.autoresolution.shizuku.IDisplayControl
 import top.loongway.autoresolution.shizuku.IShellService
 import top.loongway.autoresolution.shizuku.service.DisplayControlService
 
-/** 全局协调中心：管理 Shizuku UserService 绑定、显示器监听、分辨率切换与屏幕电源控制。 */
+/** 全局协调中心：管理 Shizuku UserService 绑定、显示器监听与屏幕电源控制。 */
 object ResolutionManager {
 
     private const val TAG = "ResolutionManager"
-    private const val PREFS_NAME = "resolution_settings"
-    private const val KEY_WIDTH = "target_width"
-    private const val KEY_HEIGHT = "target_height"
+    private const val PREFS_NAME = "trackpad_settings"
     private const val KEY_AUTO_BLACK_SCREEN = "auto_black_screen"
-
-    /** 目标分辨率，可通过 [setTargetResolution] 修改并持久化到 SharedPreferences */
-    var targetWidth = 1080
-        private set
-    var targetHeight = 1920
-        private set
 
     /** 检测到外接显示器时自动黑屏（仅外接显示器输出） */
     var autoBlackScreen = false
@@ -40,12 +31,12 @@ object ResolutionManager {
     private lateinit var appContext: Context
     private val handler = Handler(Looper.getMainLooper())
 
-    // Shell service (wm size)
+    // Shell service（权限授予 / input 注入降级）
     private var shellService: IShellService? = null
     private var shellConn: ServiceConnection? = null
     private var shellArgs: UserServiceArgs? = null
 
-    // Display control (SurfaceControl power mode)
+    // Display control（SurfaceControl 电源控制）
     private var displayControl: IDisplayControl? = null
     private var dcConn: ServiceConnection? = null
     private var dcArgs: UserServiceArgs? = null
@@ -67,17 +58,6 @@ object ResolutionManager {
         }
     }
 
-    /** 修改目标分辨率并持久化；显示器已连接时立即应用新分辨率 */
-    fun setTargetResolution(width: Int, height: Int) {
-        targetWidth = width
-        targetHeight = height
-        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
-            .putInt(KEY_WIDTH, width)
-            .putInt(KEY_HEIGHT, height)
-            .apply()
-        refresh()
-    }
-
     /** 切换「检测到显示器自动黑屏」并持久化；显示器已连接时立即生效 */
     fun setAutoBlackScreen(enabled: Boolean) {
         autoBlackScreen = enabled
@@ -87,33 +67,9 @@ object ResolutionManager {
         refresh()
     }
 
-    /** 还原目标分辨率为系统屏幕分辨率并持久化 */
-    fun resetTargetResolution() {
-        val (w, h) = systemScreenResolution()
-        setTargetResolution(w, h)
-    }
-
     private fun loadSettings() {
-        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (prefs.contains(KEY_WIDTH) && prefs.contains(KEY_HEIGHT)) {
-            targetWidth = prefs.getInt(KEY_WIDTH, targetWidth)
-            targetHeight = prefs.getInt(KEY_HEIGHT, targetHeight)
-        } else {
-            // 首次使用：默认目标分辨率 = 系统屏幕分辨率，并持久化
-            val (w, h) = systemScreenResolution()
-            targetWidth = w
-            targetHeight = h
-            prefs.edit().putInt(KEY_WIDTH, w).putInt(KEY_HEIGHT, h).apply()
-        }
-        autoBlackScreen = prefs.getBoolean(KEY_AUTO_BLACK_SCREEN, false)
-    }
-
-    /** 主屏物理分辨率（Display.Mode 的物理尺寸，不受 wm size override 影响） */
-    fun systemScreenResolution(): Pair<Int, Int> {
-        val dm = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        val display = dm.getDisplay(Display.DEFAULT_DISPLAY)
-            ?: return appContext.resources.displayMetrics.let { it.widthPixels to it.heightPixels }
-        return display.mode.physicalWidth to display.mode.physicalHeight
+        autoBlackScreen = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUTO_BLACK_SCREEN, false)
     }
 
     fun start() {
@@ -130,7 +86,6 @@ object ResolutionManager {
 
     fun stop() {
         isStarted = false
-        shellService?.exec("wm size reset")
         unregisterDisplayListener()
         unbindShellService()
         unbindDisplayControl()
@@ -159,6 +114,26 @@ object ResolutionManager {
     }
 
     // ---- Shell Service ----
+
+    /**
+     * 后台线程执行 shell 命令（触控板事件注入等低频提权操作）。
+     * ShellService 未绑定时先尝试懒绑定（后台监听未启动也能用触控板）；
+     * 冷启动首轮命令可能因连接未建立而丢弃，属预期行为。
+     */
+    fun execShellAsync(command: String, onResult: ((String) -> Unit)? = null) {
+        if (shellService == null) bindShellService()
+        val shell = shellService
+        if (shell == null) {
+            Log.w(TAG, "shell service not ready, drop command: $command")
+            // 必须回调失败，让调用方（如应用启动器）能走自己的降级路线
+            onResult?.let { cb -> handler.post { cb("error: shell service not ready") } }
+            return
+        }
+        Thread {
+            val result = shell.exec(command)
+            if (onResult != null) handler.post { onResult(result) }
+        }.start()
+    }
 
     private fun bindShellService(onReady: (() -> Unit)? = null) {
         if (shellService != null) return
@@ -245,7 +220,7 @@ object ResolutionManager {
         override fun onDisplayChanged(id: Int) = Unit
     }
 
-    // ---- Resolution ----
+    // ---- State ----
 
     fun refresh() {
         val displays = displayManager?.displays ?: return
@@ -253,12 +228,10 @@ object ResolutionManager {
 
         if (ext != null) {
             connectedDisplayName = queryDisplayName()
-            shellService?.exec("wm size ${targetWidth}x${targetHeight}")
             // 开关开启时：外接显示器接入即黑屏（仅外接显示器输出）
             if (autoBlackScreen) turnScreenOff()
         } else {
             connectedDisplayName = null
-            shellService?.exec("wm size reset")
             turnScreenOn()
         }
         onStateChanged?.invoke()
