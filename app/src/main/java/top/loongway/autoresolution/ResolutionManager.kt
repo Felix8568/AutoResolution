@@ -1,21 +1,27 @@
 package top.loongway.autoresolution
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.view.Display
+import androidx.core.content.ContextCompat
 import rikka.shizuku.Shizuku
 import rikka.shizuku.Shizuku.UserServiceArgs
 import top.loongway.autoresolution.shizuku.IDisplayControl
 import top.loongway.autoresolution.shizuku.IShellService
 import top.loongway.autoresolution.shizuku.service.DisplayControlService
+import java.util.concurrent.Executors
 
 /** 全局协调中心：管理 Shizuku UserService 绑定、显示器监听与屏幕电源控制。 */
 object ResolutionManager {
@@ -82,11 +88,14 @@ object ResolutionManager {
         bindShellService()
         bindDisplayControl()
         registerDisplayListener()
+        registerScreenOffReceiver()
     }
 
     fun stop() {
         isStarted = false
         unregisterDisplayListener()
+        unregisterScreenOffReceiver()
+        restoreScreenNow() // 必须在解绑前恢复，shell 进程被回收后无法再恢复亮度
         unbindShellService()
         unbindDisplayControl()
     }
@@ -146,7 +155,9 @@ object ResolutionManager {
         if (shellService != null) return
         if (!shizukuReady()) return
 
-        shellArgs = serviceArgs("top.loongway.autoresolution.shizuku.service.ShellService", "shell")
+        shellArgs = serviceArgs(
+            "top.loongway.autoresolution.shizuku.service.ShellService", "shell", 1
+        )
         shellConn = ServiceConn(
             onConnected = { binder ->
                 shellService = IShellService.Stub.asInterface(binder)
@@ -181,9 +192,10 @@ object ResolutionManager {
         if (displayControl != null) return
         if (!shizukuReady()) return
 
+        // AIDL/实现有变更时必须提版本号，否则 Shizuku 会继续跑旧进程旧代码
         dcArgs = serviceArgs(
             "top.loongway.autoresolution.shizuku.service.DisplayControlService",
-            DisplayControlService.TAG
+            DisplayControlService.TAG, 2
         )
         dcConn = ServiceConn(
             onConnected = { binder -> displayControl = IDisplayControl.Stub.asInterface(binder) },
@@ -200,12 +212,114 @@ object ResolutionManager {
 
     // ---- Screen control ----
 
+    /** 息屏方式：亮度 -1 关背光保触摸（首选）／硬关屏（亮度 API 不可用时降级，触摸中断） */
+    private enum class DarkMode { None, Brightness, PowerOff }
+
+    // 屏幕控制串行执行：含 sh 子进程调用（数百 ms），且 off/on 必须保序
+    private val screenExecutor = Executors.newSingleThreadExecutor()
+
+    @Volatile private var darkMode = DarkMode.None
+    @Volatile private var recordBrightness = 128
+    @Volatile private var recordBrightnessMode = Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
+
+    /**
+     * 息屏（触摸可用）：亮度 -1 只关背光，电源模式保持 ON，系统不感知灭屏——
+     * 触摸屏照常上报、Activity 生命周期不变，主屏触控板在黑屏下继续工作。
+     * 亮度 API 不可用（Android < 12 等）时降级为硬关屏。
+     */
     fun turnScreenOff() {
-        displayControl?.setPowerModeToSurfaceControl(DisplayControlService.POWER_MODE_OFF)
+        screenExecutor.execute {
+            runCatching {
+                val dc = displayControl ?: return@runCatching
+                if (darkMode != DarkMode.None) return@runCatching // 已在息屏态：别把强制手动亮度当成用户设置记下来
+                recordBrightness = runCatching {
+                    Settings.System.getInt(appContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+                }.getOrDefault(128)
+                recordBrightnessMode = runCatching {
+                    Settings.System.getInt(appContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE)
+                }.getOrDefault(Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC)
+                // 切手动亮度：否则自动亮度会随环境光变化把背光重新点亮
+                dc.setBrightnessModeToSetting(Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                if (dc.setBrightnessToSurfaceControl(DisplayControlService.BRIGHTNESS_BACKLIGHT_OFF)) {
+                    darkMode = DarkMode.Brightness
+                } else {
+                    Log.w(TAG, "setDisplayBrightness unavailable, fallback to power off (touch disabled)")
+                    dc.setBrightnessModeToSetting(recordBrightnessMode) // 回滚手动亮度
+                    darkMode = if (dc.setPowerModeToSurfaceControl(DisplayControlService.POWER_MODE_OFF)) {
+                        DarkMode.PowerOff
+                    } else DarkMode.None
+                }
+            }.onFailure { Log.e(TAG, "turnScreenOff failed", it) }
+        }
     }
 
+    /** 息屏恢复：走 settings 抖动让系统按自己的换算重新套用亮度（避免手工换算 float 比例） */
     fun turnScreenOn() {
-        displayControl?.setPowerModeToSurfaceControl(DisplayControlService.POWER_MODE_NORMAL)
+        screenExecutor.execute {
+            runCatching { restoreScreen() }.onFailure { Log.e(TAG, "turnScreenOn failed", it) }
+        }
+    }
+
+    private fun restoreScreen() {
+        val dc = displayControl ?: return
+        when (darkMode) {
+            DarkMode.Brightness -> {
+                // 先给最低可见亮度立即可见，settings 的重新套用有延迟
+                dc.setBrightnessToSurfaceControl(DisplayControlService.BRIGHTNESS_MIN_VISIBLE)
+                // ±5 抖动：settings 值不变时系统不会触发重新套用
+                val nudge = if (recordBrightness < 8) recordBrightness + 5 else recordBrightness - 5
+                dc.setBrightnessToSetting(nudge)
+                Thread.sleep(30)
+                dc.setBrightnessToSetting(recordBrightness)
+                dc.setBrightnessModeToSetting(recordBrightnessMode)
+            }
+            DarkMode.PowerOff ->
+                dc.setPowerModeToSurfaceControl(DisplayControlService.POWER_MODE_NORMAL)
+            DarkMode.None -> return
+        }
+        darkMode = DarkMode.None
+    }
+
+    /** 同步恢复（stop 路径）：必须在解绑前完成，否则 shell 进程被回收后无法恢复亮度 */
+    private fun restoreScreenNow() {
+        if (darkMode == DarkMode.None) return
+        runCatching { restoreScreen() }.onFailure { Log.e(TAG, "restoreScreenNow failed", it) }
+    }
+
+    /**
+     * 真实灭屏（用户按电源键）：电源状态此后由系统接管，
+     * 这里只需还原被强制修改的亮度设置，避免唤醒后亮度模式仍卡在手动。
+     */
+    private var screenOffReceiver: BroadcastReceiver? = null
+
+    private fun registerScreenOffReceiver() {
+        screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (darkMode == DarkMode.None) return
+                val wasBrightness = darkMode == DarkMode.Brightness
+                darkMode = DarkMode.None
+                if (!wasBrightness) return
+                screenExecutor.execute {
+                    runCatching {
+                        displayControl?.let { dc ->
+                            dc.setBrightnessToSetting(recordBrightness)
+                            dc.setBrightnessModeToSetting(recordBrightnessMode)
+                        }
+                    }.onFailure { Log.e(TAG, "screen-off restore failed", it) }
+                }
+            }
+        }
+        ContextCompat.registerReceiver(
+            appContext,
+            screenOffReceiver!!,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private fun unregisterScreenOffReceiver() {
+        screenOffReceiver?.let { appContext.unregisterReceiver(it) }
+        screenOffReceiver = null
     }
 
     // ---- Display listener ----
@@ -253,9 +367,9 @@ object ResolutionManager {
 
     // ---- Helpers ----
 
-    private fun serviceArgs(className: String, tag: String) = UserServiceArgs(
+    private fun serviceArgs(className: String, tag: String, version: Int) = UserServiceArgs(
         ComponentName(appContext.packageName, className)
-    ).tag(tag).processNameSuffix(tag).daemon(false).version(1)
+    ).tag(tag).processNameSuffix(tag).daemon(false).version(version)
 
     private class ServiceConn(
         private val onConnected: (IBinder) -> Unit,
