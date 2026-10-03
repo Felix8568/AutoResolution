@@ -1,5 +1,6 @@
 package top.loongway.autoresolution.shizuku.service
 
+import android.annotation.SuppressLint
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.SystemClock
@@ -129,6 +130,8 @@ class InputInjectorService : IInputInjector.Stub() {
      * 此时调用方必须放弃本次注入：未定向的事件会缺省落到主屏（display 0），
      * 这种“看似成功”的错屏注入正是「点击无效且不触发 shell 降级」的元凶。
      */
+    // displayId 属 blocked 隐藏 API（targetSdk 36 起 lint 记 fatal），此反射已用 runCatching 降级
+    @SuppressLint("BlockedPrivateApi")
     private fun applyDisplayId(event: InputEvent, displayId: Int): Boolean {
         val method = setDisplayIdMethod ?: runCatching {
             InputEvent::class.java.getDeclaredMethod("setDisplayId", Int::class.javaPrimitiveType)
