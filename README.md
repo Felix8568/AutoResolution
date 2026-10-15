@@ -1,68 +1,82 @@
-# 自动分辨率 (AutoResolution)
+# AR 副屏助手 (AutoResolution)
 
-为 **XREAL ONE AR 眼镜**适配的程序:眼镜通过 USB-C DP(DisplayPort Alt Mode)接入手机后,系统将其识别为外接显示器,本程序自动切换目标分辨率、可选自动熄灭本机屏幕,摘下眼镜后自动还原。MIUI 风格界面。
+为 **XREAL ONE AR 眼镜**适配的程序：眼镜通过 USB-C DP(DisplayPort Alt Mode)接入手机后，系统将其识别为外接显示器——手机变身触控板，眼镜变成大屏启动页。连接后主屏自动息屏（黑屏），触控板在黑屏下照常可用；摘下眼镜自动恢复亮度。
 
-![主界面](docs/main_screenshot.png)
+<div align="center">
+
+| 主屏 · 触控板（HUD 暗黑风） | 副屏 · 启动页与触点 |
+|---|---|
+| ![主屏触控板](docs/trackpad.png) | ![副屏启动页与触点](docs/launcher_cursor.png) |
+
+</div>
 
 ## 功能
 
-- **自动切换分辨率** — 检测到外接显示器(HDMI/DP)接入,自动执行 `wm size` 切换到目标分辨率;拔掉后自动还原
-- **目标分辨率设置** — 默认跟随系统屏幕分辨率,可自定义,点击「还原」一键恢复系统分辨率
-- **检测到显示器自动黑屏** — 开关开启时,外接显示器接入即关闭本机屏幕电源(仅外接显示器输出,推荐在使用触控板、飞鼠的情况下开启)
-- **权限自动授予** — Shizuku 授权后自动静默授予通知权限与电池优化白名单,无任何权限弹窗
-- **开机自启** — 声明 `RECEIVE_BOOT_COMPLETED`,权限齐全时开机自动启动后台服务(国产 ROM 需在系统自启动管理中手动开启一次)
+- **双屏触控板** — 手机化身触控板：中部滑动移动触点、轻点即点击、左右边缘上下滑滚动、底部边缘左右滑横向滚动；触点实时渲染在眼镜屏上
+- **息屏触摸** — 眼镜连接后主屏自动息屏（只关背光、电源保持 ON），黑屏下触控板照常工作；摘下眼镜自动恢复亮度与亮度模式。HUD 界面「自动息屏」开关可随时关闭
+- **副屏启动页** — 眼镜上显示时钟 + 应用网格，注入点击跨屏启动应用；触控板角落 ✕ 一键关闭副屏当前应用
+- **可信触点** — 触点经无障碍 `TYPE_ACCESSIBILITY_OVERLAY` 渲染，穿透它的点击/滚动不会被目标 App 丢弃（Android 12+ 拦截不可信 overlay）
+- **权限自动授予** — Shizuku 授权后自动授予通知权限、电池优化白名单、自动开启无障碍触点服务（掉绑自动重绑），全程无弹窗
+- **开机自启** — 权限齐全时开机自动启动后台监听（国产 ROM 需手动允许自启动一次）
+- **链路保护** — DP 链路训练降级（如只剩 640×480 兜底档）时自动检测并提示重新插拔
 
 ## 工作原理
 
 ```
-XREAL ONE 眼镜接入(USB-C DP,系统识别为外接显示器)
+XREAL ONE 眼镜接入 (USB-C DP，系统识别为外接显示器)
         │
-        ├─ 接入 → wm size 切换目标分辨率(Shizuku ShellService)
-        │        └─ 开关开启 → SurfaceControl 关闭本机屏幕电源(Shizuku DisplayControlService)
-        │
-        └─ 摘下 → wm size reset + 屏幕亮起
+        ├─ 触点   → 无障碍可信 overlay 渲染在副屏（触摸可穿透）
+        ├─ 注入   → Shizuku InputInjectorService 反射 injectInputEvent
+        │           + InputEvent.setDisplayId 定向副屏
+        │           └─ 失败自动降级 shell `input -d <displayId>` 命令
+        ├─ 息屏   → Shizuku DisplayControlService 反射
+        │           SurfaceControl.setDisplayBrightness(token, -1)
+        │           └─ 电源模式保持 ON：系统不感知灭屏，触摸照常上报
+        └─ 拔出   → 恢复亮度/亮度模式，关闭启动页与触点
 ```
 
-所有提权操作(修改分辨率、控制屏幕电源、授予权限)均通过 **Shizuku** 以 shell 身份执行,无需 Root、无需悬浮窗、无需无障碍。
+所有提权操作（事件注入、屏幕亮度、权限授予）均通过 **Shizuku** 以 shell 身份执行，无需 Root。
+
+> 为什么息屏要用「亮度 -1」而不是电源模式关屏：`setDisplayPowerMode(OFF)` 会让触摸控制器断电、Activity 进入生命周期暂停，触控板直接失效；`setDisplayBrightness(-1)` 只关背光，系统层面屏幕仍是点亮状态，触摸管线完整保留——这是黑屏下触控板可用的关键。
 
 ## 权限说明
 
 | 权限 | 获取方式 |
 |---|---|
-| Shizuku | 首次使用需在界面点击「授予 Shizuku 权限」 |
-| 通知权限 | Shizuku 授权后自动授予(`pm grant`,同步通知开关状态) |
-| 省电策略无限制 | Shizuku 授权后自动加入电池优化白名单 |
-| 开机自启 | 国产 ROM 需手动开启(界面有蓝色链接引导至系统设置) |
+| Shizuku | 首次使用在界面点击「Shizuku」授权 |
+| 通知权限 | Shizuku 自动授予（`pm grant`） |
+| 省电策略无限制 | 自动加入电池优化白名单 |
+| 无障碍触点服务 | 经 Shizuku 自动开启，无需手动设置 |
+| 开机自启 | 国产 ROM 需在自启动管理中手动开启一次 |
 
 ## 构建与安装
 
 ```bash
-# 构建
-./gradlew :app:assembleDebug
-
-# 安装
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-> 需要预先安装 [Shizuku](https://shizuku.rikka.app/download/) 并启动服务(无线调试或 adb)。
+> 需要预先安装 [Shizuku](https://shizuku.rikka.app/download/) 并启动服务（无线调试或 adb）。
+> 可直接从 [Releases](https://github.com/Felix8568/AutoResolution/releases) 下载安装包。
 
 ## 技术栈
 
-- Kotlin + Jetpack Compose(Material3,MIUI 风格定制主题)
-- MVVM + 单向数据流(UDF):`StateFlow` + `MainViewModel` + sealed `MainEvent`
-- [Shizuku API](https://github.com/RikkaApps/Shizuku):UserService 提权执行 `wm size`、SurfaceControl 控屏
-- SharedPreferences 持久化设置(目标分辨率、自动黑屏开关)
+- Kotlin + Jetpack Compose（Material3，HUD 暗黑霓虹主题）；副屏启动页为传统 View（程序化构建）
+- MVVM + 单向数据流（UDF）：`StateFlow` + `MainViewModel` + sealed `MainEvent`
+- [Shizuku API](https://github.com/RikkaApps/Shizuku)：三个 UserService —— 事件注入 / SurfaceControl 亮度与电源 / shell 命令
+- 隐藏 API 反射：`injectInputEvent`（Android 14 起迁移至 InputManagerGlobal）、`InputEvent.setDisplayId`、`SurfaceControl.setDisplayBrightness`、`DisplayControl`（Android 14+ 需加载 services.jar 获取 display token）
+- 无障碍可信触点 overlay + 主屏自定义触控板 View（分区手势识别）
 
 ## 兼容性
 
-- **手机需支持 USB-C DP 输出**(DisplayPort Alt Mode,小米 15 等支持 DP 的机型可直接使用)
-- 适配 **XREAL ONE / XREAL ONE Pro** AR 眼镜(系统识别为外接显示器的设备均可工作)
-- Android 8.0+ (minSdk 24, targetSdk 36)
+- 手机需支持 USB-C DP 输出（DisplayPort Alt Mode，小米 15 等支持 DP 的机型可直接使用）
+- 适配 **XREAL ONE / XREAL ONE Pro** AR 眼镜（系统识别为外接显示器的设备均可工作）
+- Android 8.0+（minSdk 26，targetSdk 36）；**息屏触摸的亮度方案需 Android 12+**，更低版本自动降级为硬关屏（触摸不可用）
 - 需安装 Shizuku 或 Sui
-- 国产 ROM(小米/华为等)的自启动权限需手动开启
+- 国产 ROM（小米/华为等）的自启动权限需手动开启
 
 ## 特别鸣谢（无先后顺序）
 
-- [Extinguish](https://github.com/Moderpach/Extinguish) — 屏幕电源控制(SurfaceControl 控屏)参考了此项目的实现思路与代码,特此鸣谢。
-- [Shizuku](https://github.com/RikkaApps/Shizuku) — 提供 shell 身份提权能力,使本程序无需 Root 即可修改分辨率、控制屏幕电源与自动授予权限。
+- [Extinguish](https://github.com/Moderpach/Extinguish) — 息屏触摸方案（`setDisplayBrightness(-1)` 关背光保触摸）与 SurfaceControl 控屏参考了此项目的实现思路与代码，特此鸣谢。
+- [Shizuku](https://github.com/RikkaApps/Shizuku) — 提供 shell 身份提权能力，使本程序无需 Root 即可注入事件、控制屏幕与自动授予权限。
 - [XREAL](https://www.xreal.com/) — AR 眼镜硬件与本程序的适配对象。
