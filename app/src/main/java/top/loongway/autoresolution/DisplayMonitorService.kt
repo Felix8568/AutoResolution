@@ -1,6 +1,5 @@
 package top.loongway.autoresolution
 
-import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.Service
@@ -26,17 +25,6 @@ class DisplayMonitorService : Service() {
             } else {
                 context.startService(intent)
             }
-        }
-
-        fun stop(context: Context) {
-            context.stopService(Intent(context, DisplayMonitorService::class.java))
-        }
-
-        /** 服务是否正在运行（getRunningServices 在 API 26+ 返回本应用自己的服务） */
-        fun isRunning(context: Context): Boolean {
-            val am = context.getSystemService(ActivityManager::class.java)
-            return am.getRunningServices(Int.MAX_VALUE)
-                .any { it.service.className == DisplayMonitorService::class.java.name }
         }
     }
 

@@ -21,7 +21,7 @@ import top.loongway.autoresolution.trackpad.inject.ShellInputInjector
  * 副屏控制器（单例）：与 ResolutionManager 完全解耦，自带显示器监听。
  *
  * 职责：
- * 1. 副屏热插拔 → 挂载/销毁 [CursorPresentation]（触点窗口全程穿透触摸）；
+ * 1. 副屏热插拔 → 挂载无障碍可信触点 overlay + 启动副屏启动页（触点全程穿透触摸）；
  * 2. 接收主屏触控板指令 → 平滑更新触点 / 注入真实点击与滚轮；
  * 3. 3 秒无触摸 → 触点渐隐（Handler 防抖计时器，见 [onUserActive]）。
  *
@@ -80,12 +80,6 @@ object SecondaryDisplayController {
         // 回调经主线程 handler 派发 → 本控制器所有方法都运行在主线程
         dm.registerDisplayListener(displayListener, handler)
         attachIfPossible() // 兜底：start 之前副屏可能已经连接
-    }
-
-    fun stop() {
-        displayManager?.unregisterDisplayListener(displayListener)
-        displayManager = null
-        detach()
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {

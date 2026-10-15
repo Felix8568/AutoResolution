@@ -18,7 +18,6 @@ data class MainUiState(
     val batteryIgnored: Boolean = false,
     val a11yCursorService: Boolean = false,
     val autoBlackScreen: Boolean = false,
-    val serviceRunning: Boolean = false,
 ) {
     val allGranted: Boolean get() = shizukuGranted && notification && batteryIgnored
 }
@@ -26,7 +25,6 @@ data class MainUiState(
 /** UI 事件（UDF：事件是 UI → ViewModel 的唯一通道） */
 sealed interface MainEvent {
     data object RequestShizuku : MainEvent
-    data object ToggleService : MainEvent
     data object ToggleAutoBlackScreen : MainEvent
 }
 
@@ -46,7 +44,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun onEvent(event: MainEvent) {
         when (event) {
             MainEvent.RequestShizuku -> requestShizukuPermission()
-            MainEvent.ToggleService -> toggleService()
             MainEvent.ToggleAutoBlackScreen -> toggleAutoBlackScreen()
         }
     }
@@ -87,7 +84,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 batteryIgnored = status.batteryIgnored,
                 a11yCursorService = CursorAccessibilityService.isAvailable(),
                 autoBlackScreen = ResolutionManager.autoBlackScreen,
-                serviceRunning = DisplayMonitorService.isRunning(appContext),
             )
         }
     }
@@ -104,22 +100,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun toggleAutoBlackScreen() {
         ResolutionManager.setAutoBlackScreen(!_uiState.value.autoBlackScreen)
-        refresh()
-    }
-
-    private fun toggleService() {
-        val context = appContext
-        if (_uiState.value.serviceRunning) {
-            DisplayMonitorService.stop(context)
-        } else {
-            // 权限齐全才能启动；缺失时界面已有提示
-            if (PermissionChecker.check(context).allGranted) {
-                DisplayMonitorService.start(context)
-                ResolutionManager.rebind()
-            } else {
-                Toast.makeText(context, "权限未齐全，无法启动后台监听", Toast.LENGTH_SHORT).show()
-            }
-        }
         refresh()
     }
 
