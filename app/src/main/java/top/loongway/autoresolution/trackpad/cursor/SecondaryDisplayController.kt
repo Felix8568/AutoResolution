@@ -10,6 +10,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.MotionEvent
+import android.widget.Toast
 import top.loongway.autoresolution.trackpad.gesture.TrackpadZone
 import top.loongway.autoresolution.trackpad.launcher.LauncherActivity
 import top.loongway.autoresolution.trackpad.a11y.CursorAccessibilityService
@@ -33,6 +34,9 @@ object SecondaryDisplayController {
 
     /** 无触摸多久后隐藏触点 */
     private const val HIDE_DELAY_MS = 3_000L
+
+    /** 热插拔竞态重试：新 display 的无障碍窗口 token 注册滞后于 DisplayListener */
+    private const val A11Y_RETRY_DELAY_MS = 800L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -101,12 +105,44 @@ object SecondaryDisplayController {
         // flags 十六进制便于现场诊断（FLAG_PRESENTATION=1<<1 等，是否支持系统装饰看 ROM）
         Log.i(TAG, "secondary display: id=${display.displayId} name=${display.name} " +
             "flags=0x${display.flags.toString(16)}")
+        warnIfDegradedMode(display)
         displayId = display.displayId
         // 触点优先挂无障碍可信 overlay，不可用时内嵌在启动页 Activity 里兜底
         a11yCursor = CursorAccessibilityService.isAvailable() &&
             CursorAccessibilityService.attachCursor(display)
+        if (!a11yCursor && CursorAccessibilityService.isAvailable()) {
+            // 热插拔竞态：DisplayListener 触发时新 display 的无障碍窗口 token 可能
+            // 尚未注册，createWindowContext 拿到 null token → BadTokenException。
+            // 此时不能就此退回不可信的本地兜底（点击会被目标 App 丢弃），延迟重挂。
+            handler.postDelayed({
+                if (displayId == display.displayId && !a11yCursor &&
+                    CursorAccessibilityService.attachCursor(display)
+                ) {
+                    a11yCursor = true
+                    Log.i(TAG, "a11y cursor attached on retry")
+                }
+            }, A11Y_RETRY_DELAY_MS)
+        }
         // 副屏启动页：普通 Activity，应用盖上来、返回回落（Presentation 会压住应用）
         LauncherActivity.startOnDisplay(ctx, display.displayId)
+    }
+
+    /**
+     * 链路降级检测：DP 链路训练失败时 EDID 会只剩 640x480 一档（VESA 兜底模式），
+     * 16:9 内容被拉伸到 4:3 时序再铺满 16:9 面板，画面严重变形。
+     * 应用层无法修复链路（cmd display 只能在已有模式里选），只能提示用户重插。
+     */
+    private fun warnIfDegradedMode(display: Display) {
+        val best = display.supportedModes.maxByOrNull { it.physicalWidth * it.physicalHeight }
+        if (best != null && best.physicalWidth < 1280) {
+            Log.w(TAG, "degraded link mode: ${best.physicalWidth}x${best.physicalHeight}" +
+                "@${best.refreshRate.toInt()}Hz — expect replug")
+            Toast.makeText(
+                appContext,
+                "显示器链路降级到 ${best.physicalWidth}x${best.physicalHeight}，画面会拉伸；请重新插拔数据线",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun detach() {
