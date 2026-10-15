@@ -49,6 +49,9 @@ class LauncherActivity : ComponentActivity() {
         /** 启动后等待落屏的校验延时：覆盖 Activity 冷启动 + 副屏窗口就绪的时间 */
         private const val LANDING_CHECK_DELAY_MS = 800L
 
+        /** 落屏校验失败后的最大重试轮数（shell 重试 → 再校验） */
+        private const val MAX_LANDING_RETRIES = 2
+
         @Volatile
         private var instance: LauncherActivity? = null
 
@@ -69,7 +72,12 @@ class LauncherActivity : ComponentActivity() {
         /** 在指定副屏上启动启动页（框架跨屏路线，落屏校验失败或抛异常退回 shell am start） */
         fun startOnDisplay(context: Context, displayId: Int) {
             val intent = Intent(context, LauncherActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        // 清掉残留任务：拔屏时 finish 过的旧任务若还挂着（singleTask 同 affinity），
+                        // 会把新启动路由给销毁中的实例导致 intent 被静默丢弃
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+                )
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
@@ -81,21 +89,36 @@ class LauncherActivity : ComponentActivity() {
                 // 兜底：shell 身份跨屏启动（部分 ROM 限制应用进程的跨屏 startActivity）
                 Log.w(TAG, "framework launch threw, fallback to shell am start", e)
                 relaunchViaShell(context, displayId)
+                verifyLanding(context, displayId, 0)
                 return
             }
-            // 校验实际落屏：副屏无法承载 Activity 时，框架会把启动「静默」回落到主屏
-            // （不抛异常，catch 不到）。此时结束错位实例，改用 shell 身份重试
-            // （shell 的 am start --display 不受应用层跨屏限制）。
+            verifyLanding(context, displayId, 0)
+        }
+
+        /**
+         * 校验实际落屏：副屏无法承载 Activity 时，框架会把启动「静默」回落到主屏
+         * （不抛异常，catch 不到）；刚 finish 的僵尸实例也会让新 intent 被丢弃
+         * （instance 为 null 或 isFinishing 都视为未落屏）。
+         * 失败则结束错位/僵尸实例，改用 shell 身份重试（shell 的 am start --display
+         * 不受应用层跨屏限制），并进入下一轮校验。
+         */
+        private fun verifyLanding(context: Context, displayId: Int, attempts: Int) {
             Handler(Looper.getMainLooper()).postDelayed({
-                val inst = instance ?: return@postDelayed
-                val landed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    inst.display?.displayId ?: Display.INVALID_DISPLAY
+                val inst = instance
+                val alive = inst != null && !inst.isFinishing
+                val landed = if (alive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    inst!!.display?.displayId ?: Display.INVALID_DISPLAY
                 } else Display.INVALID_DISPLAY
-                if (landed != displayId) {
-                    Log.w(TAG, "launcher landed on display $landed, expected $displayId; retry via shell")
-                    inst.finish()
-                    relaunchViaShell(context, displayId)
+                if (landed == displayId) return@postDelayed
+                if (attempts >= MAX_LANDING_RETRIES) {
+                    Log.w(TAG, "launcher still not on display $displayId after $attempts retries, give up")
+                    return@postDelayed
                 }
+                Log.w(TAG, "launcher not on display $displayId (landed=$landed, " +
+                    "finishing=${inst?.isFinishing}), retry #${attempts + 1} via shell")
+                inst?.finish()
+                relaunchViaShell(context, displayId)
+                verifyLanding(context, displayId, attempts + 1)
             }, LANDING_CHECK_DELAY_MS)
         }
 
