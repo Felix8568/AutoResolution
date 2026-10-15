@@ -2,6 +2,7 @@ package top.loongway.autoresolution.trackpad.cursor
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -97,6 +98,9 @@ object SecondaryDisplayController {
         val ctx = appContext ?: return
         val dm = displayManager ?: return
         val display = dm.displays.firstOrNull { it.isTrackpadTarget() } ?: return
+        // flags 十六进制便于现场诊断（FLAG_PRESENTATION=1<<1 等，是否支持系统装饰看 ROM）
+        Log.i(TAG, "secondary display: id=${display.displayId} name=${display.name} " +
+            "flags=0x${display.flags.toString(16)}")
         displayId = display.displayId
         // 触点优先挂无障碍可信 overlay，不可用时内嵌在启动页 Activity 里兜底
         a11yCursor = CursorAccessibilityService.isAvailable() &&

@@ -74,8 +74,9 @@ object ResolutionManager {
     }
 
     private fun loadSettings() {
+        // 默认开启：眼镜接入即息屏是本应用的核心流程（触控板黑屏可用）
         autoBlackScreen = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_AUTO_BLACK_SCREEN, false)
+            .getBoolean(KEY_AUTO_BLACK_SCREEN, true)
     }
 
     fun start() {
@@ -198,7 +199,12 @@ object ResolutionManager {
             DisplayControlService.TAG, 2
         )
         dcConn = ServiceConn(
-            onConnected = { binder -> displayControl = IDisplayControl.Stub.asInterface(binder) },
+            onConnected = { binder ->
+                displayControl = IDisplayControl.Stub.asInterface(binder)
+                // 绑定可能晚于眼镜接入触发的 refresh（彼时 displayControl 还是 null，
+                // turnScreenOff 会静默跳过），绑完补判一次息屏，闭合时序空洞
+                handler.post { refresh() }
+            },
             onDisconnected = { displayControl = null }
         )
         Shizuku.bindUserService(dcArgs!!, dcConn!!)
@@ -242,6 +248,7 @@ object ResolutionManager {
                 dc.setBrightnessModeToSetting(Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
                 if (dc.setBrightnessToSurfaceControl(DisplayControlService.BRIGHTNESS_BACKLIGHT_OFF)) {
                     darkMode = DarkMode.Brightness
+                    Log.i(TAG, "screen dark via brightness -1 (touch alive), saved brightness=$recordBrightness")
                 } else {
                     Log.w(TAG, "setDisplayBrightness unavailable, fallback to power off (touch disabled)")
                     dc.setBrightnessModeToSetting(recordBrightnessMode) // 回滚手动亮度
@@ -349,8 +356,9 @@ object ResolutionManager {
 
         if (ext != null) {
             connectedDisplayName = queryDisplayName()
-            // 开关开启时：外接显示器接入即黑屏（仅外接显示器输出）
-            if (autoBlackScreen) turnScreenOff()
+            // 开关开启时：外接显示器接入即黑屏（仅外接显示器输出）；
+            // 关闭时确保亮屏（幂等，非息屏态是空操作），修掉「息屏中关掉开关卡在黑屏」
+            if (autoBlackScreen) turnScreenOff() else turnScreenOn()
         } else {
             connectedDisplayName = null
             turnScreenOn()

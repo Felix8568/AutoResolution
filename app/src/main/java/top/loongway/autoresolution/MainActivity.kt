@@ -173,7 +173,7 @@ class MainActivity : ComponentActivity() {
                     }
                     DeviceInfoBar(displayInfo)
                     Spacer(Modifier.height(12.dp))
-                    StatusPillRow(state)
+                    StatusPillRow(state, onEvent)
                 }
 
                 // 触控板面板：全出血贴左右边缘和底部，高度固定为屏高 60%
@@ -268,7 +268,7 @@ class MainActivity : ComponentActivity() {
             title = { Text("关于与帮助") },
             text = {
                 Text(
-                    "将手机作为触控板，控制外接显示器：\n\n· 中部区域滑动移动触点，轻点即点击\n· 左右边缘上下滑滚动\n· 底部边缘左右滑横向滚动\n· 常用应用点击后跨屏启动到副屏\n\n需要 Shizuku 授权与无障碍触点服务。",
+                    "将手机作为触控板，控制外接显示器：\n\n· 中部区域滑动移动触点，轻点即点击\n· 左右边缘上下滑滚动\n· 底部边缘左右滑横向滚动\n· 常用应用点击后跨屏启动到副屏\n· 连接眼镜后主屏自动息屏，触控板在黑屏下仍可操作（点「自动息屏」可关闭）\n\n需要 Shizuku 授权与无障碍触点服务。",
                     fontSize = 14.sp,
                     lineHeight = 20.sp
                 )
@@ -347,19 +347,22 @@ class MainActivity : ComponentActivity() {
         return "${display.name} · ${mode.physicalWidth}×${mode.physicalHeight} · ${mode.refreshRate.toInt()}Hz"
     }
 
-    /** 状态胶囊行：权限状态纯展示 */
+    /** 状态胶囊行：权限状态纯展示 + 自动息屏开关 */
     @Composable
-    private fun StatusPillRow(state: MainUiState) {
+    private fun StatusPillRow(state: MainUiState, onEvent: (MainEvent) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             HudPill("通知权限", state.notification)
             HudPill("省电策略", state.batteryIgnored)
             HudPill("无障碍服务", state.a11yCursorService)
+            HudPill("自动息屏", state.autoBlackScreen) {
+                onEvent(MainEvent.ToggleAutoBlackScreen)
+            }
         }
     }
 
-    /** 单个状态胶囊：状态色描边 + 圆点 + 名称（纯展示） */
+    /** 单个状态胶囊：状态色描边 + 圆点 + 名称；[onClick] 非空时整颗可点（开关） */
     @Composable
-    private fun RowScope.HudPill(label: String, ok: Boolean) {
+    private fun RowScope.HudPill(label: String, ok: Boolean, onClick: (() -> Unit)? = null) {
         val color = if (ok) OkGreen else BadRed
         Row(
             Modifier
@@ -367,6 +370,7 @@ class MainActivity : ComponentActivity() {
                 .clip(RoundedCornerShape(50))
                 .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(50))
                 .background(color.copy(alpha = 0.10f))
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
                 .padding(vertical = 7.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically

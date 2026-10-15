@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.format.DateFormat
+import android.util.Log
+import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -39,9 +41,13 @@ import java.util.Date
 class LauncherActivity : ComponentActivity() {
 
     companion object {
+        private const val TAG = "LauncherActivity"
         private const val COLOR_BG = 0xFF0A0A0A.toInt()
         private const val COLOR_TEXT_PRIMARY = 0xFFF2F4F8.toInt()
         private const val COLOR_TEXT_DIM = 0xFF8A93A6.toInt()
+
+        /** 启动后等待落屏的校验延时：覆盖 Activity 冷启动 + 副屏窗口就绪的时间 */
+        private const val LANDING_CHECK_DELAY_MS = 800L
 
         @Volatile
         private var instance: LauncherActivity? = null
@@ -60,7 +66,7 @@ class LauncherActivity : ComponentActivity() {
             instance?.finish()
         }
 
-        /** 在指定副屏上启动启动页（框架跨屏路线，失败退回 shell am start） */
+        /** 在指定副屏上启动启动页（框架跨屏路线，落屏校验失败或抛异常退回 shell am start） */
         fun startOnDisplay(context: Context, displayId: Int) {
             val intent = Intent(context, LauncherActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -73,10 +79,30 @@ class LauncherActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 // 兜底：shell 身份跨屏启动（部分 ROM 限制应用进程的跨屏 startActivity）
-                top.loongway.autoresolution.ResolutionManager.execShellAsync(
-                    "am start --display $displayId -n ${context.packageName}/top.loongway.autoresolution.trackpad.launcher.LauncherActivity"
-                )
+                Log.w(TAG, "framework launch threw, fallback to shell am start", e)
+                relaunchViaShell(context, displayId)
+                return
             }
+            // 校验实际落屏：副屏无法承载 Activity 时，框架会把启动「静默」回落到主屏
+            // （不抛异常，catch 不到）。此时结束错位实例，改用 shell 身份重试
+            // （shell 的 am start --display 不受应用层跨屏限制）。
+            Handler(Looper.getMainLooper()).postDelayed({
+                val inst = instance ?: return@postDelayed
+                val landed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    inst.display?.displayId ?: Display.INVALID_DISPLAY
+                } else Display.INVALID_DISPLAY
+                if (landed != displayId) {
+                    Log.w(TAG, "launcher landed on display $landed, expected $displayId; retry via shell")
+                    inst.finish()
+                    relaunchViaShell(context, displayId)
+                }
+            }, LANDING_CHECK_DELAY_MS)
+        }
+
+        private fun relaunchViaShell(context: Context, displayId: Int) {
+            top.loongway.autoresolution.ResolutionManager.execShellAsync(
+                "am start --display $displayId -n ${context.packageName}/top.loongway.autoresolution.trackpad.launcher.LauncherActivity"
+            )
         }
     }
 
