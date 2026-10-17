@@ -179,13 +179,10 @@ class MainActivity : ComponentActivity() {
                     StatusPillRow(state, onEvent)
                 }
 
-                // 触控板面板：全出血贴左右边缘和底部，高度固定为屏高 60%
-                if (displayInfo != null) {
-                    Spacer(Modifier.weight(1f))
-                    TrackpadPanel(Modifier.height(panelMaxHeight))
-                } else {
-                    NoDisplayHint(Modifier.weight(1f))
-                }
+                // 触控板面板：常驻显示，无任何前置条件——
+                // 无副屏时手势经 SecondaryDisplayController 的守卫自然无效果，副屏接入即生效
+                Spacer(Modifier.weight(1f))
+                TrackpadPanel(Modifier.height(panelMaxHeight))
             }
         }
     }
@@ -459,53 +456,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 未连接副屏时的占位提示 */
-    @Composable
-    private fun NoDisplayHint(modifier: Modifier) {
-        val context = LocalContext.current
-        val appIcon = remember { runCatching { context.packageManager.getApplicationIcon(context.packageName) }.getOrNull() }
-        Column(
-            modifier
-                .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, HudStroke, CircleShape)
-                    .background(HudPanel),
-                contentAlignment = Alignment.Center
-            ) {
-                if (appIcon != null) {
-                    AndroidView(
-                        factory = { ctx -> android.widget.ImageView(ctx).apply { scaleType = android.widget.ImageView.ScaleType.FIT_CENTER } },
-                        update = { it.setImageDrawable(appIcon) },
-                        modifier = Modifier.fillMaxSize().padding(12.dp)
-                    )
-                } else {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_ar_glasses),
-                        contentDescription = null,
-                        tint = Color.Unspecified,
-                        modifier = Modifier.size(34.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("未连接显示器", color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "连接外接显示器后，此处将变为触控板",
-                color = TextSecondary,
-                fontSize = 13.sp
-            )
-        }
-    }
-
-    /** 底部触控板面板（本体）：霓虹边框背景 + 内嵌 TrackpadView 直接处理手势（仅在已连接副屏时显示） */
+    /** 底部触控板面板（本体）：霓虹边框背景 + 内嵌 TrackpadView 直接处理手势（常驻显示） */
     @Composable
     private fun TrackpadPanel(modifier: Modifier) {
         val context = LocalContext.current
