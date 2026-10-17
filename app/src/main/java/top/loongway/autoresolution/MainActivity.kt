@@ -34,6 +34,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.flow.update
+import top.loongway.autoresolution.trackpad.TrackpadSettings
 import top.loongway.autoresolution.trackpad.cursor.SecondaryDisplayController
 import top.loongway.autoresolution.trackpad.gesture.TrackpadListener
 import top.loongway.autoresolution.trackpad.inject.InputInjector
@@ -155,7 +157,8 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .background(HudBg)
         ) {
-            val panelMaxHeight = maxHeight * 0.5f
+            // 触控板高度实时可调（设置弹窗改动 → 状态变化 → 此处重组，面板立即伸缩）
+            val panelMaxHeight = maxHeight * TrackpadSettings.panelHeight
             Column(
                 Modifier
                     .fillMaxSize()
@@ -187,10 +190,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 标题区：应用图标 + 标题 + Shizuku 状态 + 右上信息按钮 */
+    /** 标题区：应用图标 + 标题 + Shizuku 状态 + 右上设置/信息按钮 */
     @Composable
     private fun HeaderRow(shizukuGranted: Boolean, onEvent: (MainEvent) -> Unit) {
         var showInfo by remember { mutableStateOf(false) }
+        var showSettings by remember { mutableStateOf(false) }
         val context = LocalContext.current
         val appIcon = remember { runCatching { context.packageManager.getApplicationIcon(context.packageName) }.getOrNull() }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,22 +245,91 @@ class MainActivity : ComponentActivity() {
                 Text("Shizuku", color = TextSecondary, fontSize = 11.sp)
             }
             Spacer(Modifier.weight(1f))
-            // 信息按钮：关于与帮助
-            Box(
-                Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, HudStroke, CircleShape)
-                    .clickable { showInfo = true },
-                contentAlignment = Alignment.Center
-            ) {
-                Text("i", color = TextSecondary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            // 信息按钮：关于与帮助；齿轮按钮：触控板设置
+            Row {
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, HudStroke, CircleShape)
+                        .clickable { showSettings = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("⚙", color = TextSecondary, fontSize = 15.sp)
+                }
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, HudStroke, CircleShape)
+                        .clickable { showInfo = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("i", color = TextSecondary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
         if (showInfo) {
             InfoDialog { showInfo = false }
         }
+        if (showSettings) {
+            TrackpadSettingsDialog { showSettings = false }
+        }
     }
+
+    /** 触控板设置：面板高度 + 边缘滚动区宽度，滑杆改动即时生效（面板在弹窗后实时伸缩） */
+    @Composable
+    private fun TrackpadSettingsDialog(onDismiss: () -> Unit) {
+        // 在组合期读取状态：滑杆拖动 → 设置变化 → 本对话框与背后的面板同时重组
+        val heightPct = (TrackpadSettings.panelHeight * 100).toInt()
+        val edgePct = (TrackpadSettings.edgeRatio * 100).toInt()
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            confirmButton = {
+                TextButton(onClick = onDismiss) { Text("完成") }
+            },
+            title = { Text("触控板设置") },
+            text = {
+                Column {
+                    Text(
+                        "面板高度 · $heightPct%",
+                        color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold
+                    )
+                    Slider(
+                        value = TrackpadSettings.panelHeight,
+                        onValueChange = {
+                            TrackpadSettings.updatePanelHeight(snapToStep(it, TrackpadSettings.PANEL_HEIGHT_STEP))
+                        },
+                        valueRange = TrackpadSettings.panelHeightRange,
+                        steps = 5, // 50/55/60/65/70/75/80
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "边缘滚动区宽度 · $edgePct%",
+                        color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold
+                    )
+                    Slider(
+                        value = TrackpadSettings.edgeRatio,
+                        onValueChange = {
+                            TrackpadSettings.updateEdgeRatio(snapToStep(it, TrackpadSettings.EDGE_RATIO_STEP))
+                        },
+                        valueRange = TrackpadSettings.edgeRatioRange,
+                        steps = 3, // 10/15/20/25
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "边缘区手势：左右边缘上下滑 = 垂直滚动，底部边缘左右滑 = 水平滚动；改动立即生效并自动保存",
+                        color = TextSecondary, fontSize = 12.sp, lineHeight = 17.sp
+                    )
+                }
+            }
+        )
+    }
+
+    /** 滑杆值吸附到步进档位（5% 一档），避免浮点中间值 */
+    private fun snapToStep(v: Float, step: Float): Float =
+        (Math.round(v / step) * step).coerceAtMost(0.80f)
 
     @Composable
     private fun InfoDialog(onDismiss: () -> Unit) {
@@ -439,6 +512,8 @@ class MainActivity : ComponentActivity() {
         val trackpadView = remember {
             TrackpadView(context).apply { listener = trackpadListener }
         }
+        // 边缘分区比例实时同步：设置弹窗改动 → 状态变化 → 重组 → 此处写入 View
+        val edgeRatio = TrackpadSettings.edgeRatio
         Box(
             modifier
                 .fillMaxWidth()
@@ -454,6 +529,7 @@ class MainActivity : ComponentActivity() {
             // 触控板本体：边框图之上接收手势
             AndroidView(
                 factory = { trackpadView },
+                update = { it.edgeRatio = edgeRatio },
                 modifier = Modifier.matchParentSize()
             )
             // 左下/右下角「关闭应用」按钮：直接结束副屏当前应用，角落固定位置便于盲操作

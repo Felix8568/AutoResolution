@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.os.Build
 import rikka.shizuku.Shizuku
+import top.loongway.autoresolution.trackpad.TrackpadSettings
 import top.loongway.autoresolution.trackpad.a11y.AccessibilityRepair
 import top.loongway.autoresolution.trackpad.cursor.SecondaryDisplayController
 import top.loongway.autoresolution.trackpad.inject.InputInjector
@@ -18,6 +19,8 @@ class AutoResolutionApp : Application() {
 
         ResolutionManager.init(this)
         InputInjector.init(this)
+        // 触控板外观/手感设置（面板高度、边缘分区）：先于任何界面读取
+        TrackpadSettings.init(this)
         // 副屏触点控制器：随应用常驻，监听外接屏热插拔
         SecondaryDisplayController.start(this)
         createNotificationChannel()
