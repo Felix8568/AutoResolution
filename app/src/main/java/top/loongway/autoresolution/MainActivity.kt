@@ -10,7 +10,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,12 +29,15 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -47,15 +49,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.flow.update
+import top.loongway.autoresolution.trackpad.TrackpadSettings
 import top.loongway.autoresolution.trackpad.cursor.SecondaryDisplayController
 import top.loongway.autoresolution.trackpad.gesture.TrackpadListener
 import top.loongway.autoresolution.trackpad.inject.InputInjector
@@ -155,7 +160,7 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .background(HudBg)
         ) {
-            val panelMaxHeight = maxHeight * 0.5f
+            // 触控板高度实时可调（设置弹窗改动 → 状态变化 → 此处重组，面板立即伸缩）
             Column(
                 Modifier
                     .fillMaxSize()
@@ -164,7 +169,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(12.dp))
                 // 信息区：单独保留左右边距
                 Column(Modifier.padding(horizontal = 16.dp)) {
-                    HeaderRow(shizukuGranted = state.shizukuGranted, onEvent = onEvent)
+                    HeaderRow(state = state, onEvent = onEvent)
                     Spacer(Modifier.height(14.dp))
 
                     if (!state.shizukuGranted) {
@@ -172,25 +177,36 @@ class MainActivity : ComponentActivity() {
                         return@Column
                     }
                     DeviceInfoBar(displayInfo)
-                    Spacer(Modifier.height(12.dp))
-                    StatusPillRow(state, onEvent)
                 }
 
-                // 触控板面板：全出血贴左右边缘和底部，高度固定为屏高 60%
-                if (displayInfo != null) {
-                    Spacer(Modifier.weight(1f))
-                    TrackpadPanel(Modifier.height(panelMaxHeight))
-                } else {
-                    NoDisplayHint(Modifier.weight(1f))
+                // 面板区：占据剩余空间，顶部 14dp 与信息条间隔（与上方间距对称）。
+                // 触控板高度 = 面板区高度 × 设置比例，100% 档贴齐间隔线，
+                // 任何档位都不会遮挡顶部内容；无副屏时手势经守卫自然无效果
+                BoxWithConstraints(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(top = 14.dp)
+                ) {
+                    val panelHeight = maxHeight * TrackpadSettings.panelHeight
+                    TrackpadPanel(
+                        Modifier
+                            .height(panelHeight)
+                            .align(Alignment.BottomCenter)
+                    )
                 }
             }
         }
     }
 
-    /** 标题区：应用图标 + 标题 + Shizuku 状态 + 右上信息按钮 */
+    /**
+     * 标题区：应用图标 + 标题 + 统一状态胶囊 + 设置按钮。
+     * 四项权限（Shizuku/通知/省电/无障碍）收敛为一颗状态胶囊：
+     * 有问题红色并写明缺什么，全就绪绿色；Shizuku 未授权时点击可请求。
+     */
     @Composable
-    private fun HeaderRow(shizukuGranted: Boolean, onEvent: (MainEvent) -> Unit) {
-        var showInfo by remember { mutableStateOf(false) }
+    private fun HeaderRow(state: MainUiState, onEvent: (MainEvent) -> Unit) {
+        var showSettings by remember { mutableStateOf(false) }
         val context = LocalContext.current
         val appIcon = remember { runCatching { context.packageManager.getApplicationIcon(context.packageName) }.getOrNull() }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -218,63 +234,199 @@ class MainActivity : ComponentActivity() {
                 )
             )
             Spacer(Modifier.width(10.dp))
-            // Shizuku 状态：紧跟标题，未授权时可点击请求
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(50))
-                    .border(
-                        1.dp,
-                        if (shizukuGranted) OkGreen.copy(alpha = 0.6f) else BadRed.copy(alpha = 0.6f),
-                        RoundedCornerShape(50)
-                    )
-                    .clickable { if (!shizukuGranted) onEvent(MainEvent.RequestShizuku) }
-                    .padding(horizontal = 10.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (shizukuGranted) OkGreen else BadRed)
-                )
-                Spacer(Modifier.width(5.dp))
-                Text("Shizuku", color = TextSecondary, fontSize = 11.sp)
-            }
+            // 统一状态胶囊：四项权限任何一项缺失都会显形
+            HudPill(
+                label = when {
+                    !state.shizukuGranted -> "Shizuku 未授权"
+                    !state.notification -> "通知权限未授予"
+                    !state.batteryIgnored -> "省电策略未放行"
+                    !state.a11yCursorService -> "无障碍未开启"
+                    else -> "已就绪"
+                },
+                ok = state.allGranted && state.a11yCursorService,
+                onClick = if (!state.shizukuGranted) ({ onEvent(MainEvent.RequestShizuku) }) else null
+            )
             Spacer(Modifier.weight(1f))
-            // 信息按钮：关于与帮助
+            // 设置按钮：触控板设置与简要帮助
             Box(
                 Modifier
                     .size(32.dp)
                     .clip(CircleShape)
                     .border(1.dp, HudStroke, CircleShape)
-                    .clickable { showInfo = true },
+                    .clickable { showSettings = true },
                 contentAlignment = Alignment.Center
             ) {
-                Text("i", color = TextSecondary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("⚙", color = TextSecondary, fontSize = 15.sp)
             }
         }
-        if (showInfo) {
-            InfoDialog { showInfo = false }
+        if (showSettings) {
+            TrackpadSettingsDialog(state, onEvent) { showSettings = false }
         }
     }
 
+    /**
+     * 触控板设置（HUD 风格自绘面板）：自动息屏开关 + 面板高度/边缘滚动区滑杆 + 简要帮助。
+     * 滑杆改动即时生效（面板在弹窗后实时伸缩），开关与持久化走 UDF 事件。
+     */
     @Composable
-    private fun InfoDialog(onDismiss: () -> Unit) {
-        AlertDialog(
+    private fun TrackpadSettingsDialog(
+        state: MainUiState,
+        onEvent: (MainEvent) -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        // 在组合期读取状态：滑杆拖动 → 设置变化 → 本对话框与背后的触控板同时重组
+        val heightPct = (TrackpadSettings.panelHeight * 100).toInt()
+        val sidePct = (TrackpadSettings.edgeRatio * 100).toInt()
+        val bottomDp = TrackpadSettings.bottomStripDp.toInt()
+        Dialog(
             onDismissRequest = onDismiss,
-            confirmButton = {
-                TextButton(onClick = onDismiss) { Text("知道了") }
-            },
-            title = { Text("关于与帮助") },
-            text = {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(
+                Modifier
+                    .padding(horizontal = 20.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(HudPanel)
+                    .border(1.dp, HudStroke, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
+            ) {
+                // 标题行：标题 + 右上角关闭钮
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "触控板设置",
+                        color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Box(
+                        Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .border(1.dp, HudStroke, CircleShape)
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("✕", color = TextSecondary, fontSize = 12.sp)
+                    }
+                }
+                HudDivider()
+
+                // 自动息屏
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "自动息屏",
+                            color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "连接眼镜后自动熄灭本机屏幕，摘下眼镜自动恢复；黑屏期间触控板照常可用",
+                            color = TextSecondary, fontSize = 12.sp, lineHeight = 16.sp
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = state.autoBlackScreen,
+                        onCheckedChange = { onEvent(MainEvent.ToggleAutoBlackScreen) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = OkGreen,
+                            checkedTrackColor = OkGreen.copy(alpha = 0.35f),
+                            checkedBorderColor = OkGreen.copy(alpha = 0.6f),
+                            uncheckedThumbColor = TextSecondary,
+                            uncheckedTrackColor = Color.Transparent,
+                            uncheckedBorderColor = HudStroke
+                        )
+                    )
+                }
+                HudDivider()
+
+                // 滑杆区：标签居左、实时数值居右（HUD 绿），档位点隐藏保持干净
+                SettingSlider(
+                    label = "触控板高度", valueText = "$heightPct%",
+                    value = TrackpadSettings.panelHeight,
+                    range = TrackpadSettings.panelHeightRange, steps = 9 // 50/55/…/100
+                ) {
+                    TrackpadSettings.updatePanelHeight(snapToStep(it, TrackpadSettings.PANEL_HEIGHT_STEP))
+                }
+                Spacer(Modifier.height(14.dp))
+                SettingSlider(
+                    label = "左右滚动区宽度", valueText = "$sidePct%",
+                    value = TrackpadSettings.edgeRatio,
+                    range = TrackpadSettings.edgeRatioRange, steps = 3 // 10/15/20/25
+                ) {
+                    TrackpadSettings.updateEdgeRatio(snapToStep(it, TrackpadSettings.EDGE_RATIO_STEP))
+                }
+                Spacer(Modifier.height(14.dp))
+                SettingSlider(
+                    label = "底部横滚区高度", valueText = "$bottomDp dp",
+                    value = TrackpadSettings.bottomStripDp,
+                    range = TrackpadSettings.bottomStripRange, steps = 9 // 40/48/…/120
+                ) {
+                    TrackpadSettings.updateBottomStripDp(snapToStep(it, TrackpadSettings.BOTTOM_STRIP_STEP))
+                }
+                HudDivider()
+
+                // 使用说明
                 Text(
-                    "将手机作为触控板，控制外接显示器：\n\n· 中部区域滑动移动触点，轻点即点击\n· 左右边缘上下滑滚动\n· 底部边缘左右滑横向滚动\n· 常用应用点击后跨屏启动到副屏\n· 连接眼镜后主屏自动息屏，触控板在黑屏下仍可操作（点「自动息屏」可关闭）\n\n需要 Shizuku 授权与无障碍触点服务。",
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
+                    "使用说明",
+                    color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "· 中间滑动移动触点，轻点即单击\n· 按住不动再滑动，即可拖动内容\n· 左右边缘上下滑：滚动\n· 底部边缘左右滑：横向滚动\n· 眼镜启动页轻点图标打开应用，触控板角落 ✕ 关闭应用",
+                    color = TextSecondary, fontSize = 12.sp, lineHeight = 19.sp
+                )
+                // 无「完成」按钮：所有改动即改即存，无需确认；关闭走 ✕ / 点外部 / 返回键
             }
+        }
+    }
+
+    /** HUD 分割线 */
+    @Composable
+    private fun HudDivider() {
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 14.dp),
+            thickness = 1.dp,
+            color = HudStroke.copy(alpha = 0.6f)
         )
     }
+
+    /** 设置滑杆：标签居左 + 实时数值居右（绿），隐藏档位圆点保持干净 */
+    @Composable
+    private fun SettingSlider(
+        label: String,
+        valueText: String,
+        value: Float,
+        range: ClosedFloatingPointRange<Float>,
+        steps: Int,
+        onChange: (Float) -> Unit,
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth()) {
+                Text(label, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                Text(valueText, color = OkGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Slider(
+                value = value,
+                onValueChange = onChange,
+                valueRange = range,
+                steps = steps,
+                colors = SliderDefaults.colors(
+                    thumbColor = OkGreen,
+                    activeTrackColor = OkGreen,
+                    inactiveTrackColor = HudStroke,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent
+                )
+            )
+        }
+    }
+
+    /** 滑杆值吸附到步进档位（5% 一档），避免浮点中间值 */
+    private fun snapToStep(v: Float, step: Float): Float =
+        Math.round(v / step) * step
 
     /** Shizuku 未授权引导页 */
     @Composable
@@ -347,31 +499,20 @@ class MainActivity : ComponentActivity() {
         return "${display.name} · ${mode.physicalWidth}×${mode.physicalHeight} · ${mode.refreshRate.toInt()}Hz"
     }
 
-    /** 状态胶囊行：权限状态纯展示 + 自动息屏开关 */
+    /**
+     * 单个状态胶囊：随内容宽（不拉伸）。[ok] 控制绿/红语义色，
+     * 红色只用于真正的权限问题；[onClick] 非空时整颗可点。
+     */
     @Composable
-    private fun StatusPillRow(state: MainUiState, onEvent: (MainEvent) -> Unit) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HudPill("通知权限", state.notification)
-            HudPill("省电策略", state.batteryIgnored)
-            HudPill("无障碍服务", state.a11yCursorService)
-            HudPill("自动息屏", state.autoBlackScreen) {
-                onEvent(MainEvent.ToggleAutoBlackScreen)
-            }
-        }
-    }
-
-    /** 单个状态胶囊：状态色描边 + 圆点 + 名称；[onClick] 非空时整颗可点（开关） */
-    @Composable
-    private fun RowScope.HudPill(label: String, ok: Boolean, onClick: (() -> Unit)? = null) {
+    private fun HudPill(label: String, ok: Boolean, onClick: (() -> Unit)? = null) {
         val color = if (ok) OkGreen else BadRed
         Row(
             Modifier
-                .weight(1f)
                 .clip(RoundedCornerShape(50))
                 .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(50))
                 .background(color.copy(alpha = 0.10f))
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-                .padding(vertical = 7.dp),
+                .padding(horizontal = 14.dp, vertical = 7.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -381,79 +522,34 @@ class MainActivity : ComponentActivity() {
                     .clip(CircleShape)
                     .background(color)
             )
-            Spacer(Modifier.width(5.dp))
+            Spacer(Modifier.width(6.dp))
             Text(label, color = TextPrimary, fontSize = 12.sp)
         }
     }
 
-    /** 未连接副屏时的占位提示 */
-    @Composable
-    private fun NoDisplayHint(modifier: Modifier) {
-        val context = LocalContext.current
-        val appIcon = remember { runCatching { context.packageManager.getApplicationIcon(context.packageName) }.getOrNull() }
-        Column(
-            modifier
-                .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, HudStroke, CircleShape)
-                    .background(HudPanel),
-                contentAlignment = Alignment.Center
-            ) {
-                if (appIcon != null) {
-                    AndroidView(
-                        factory = { ctx -> android.widget.ImageView(ctx).apply { scaleType = android.widget.ImageView.ScaleType.FIT_CENTER } },
-                        update = { it.setImageDrawable(appIcon) },
-                        modifier = Modifier.fillMaxSize().padding(12.dp)
-                    )
-                } else {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_ar_glasses),
-                        contentDescription = null,
-                        tint = Color.Unspecified,
-                        modifier = Modifier.size(34.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("未连接显示器", color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "连接外接显示器后，此处将变为触控板",
-                color = TextSecondary,
-                fontSize = 13.sp
-            )
-        }
-    }
-
-    /** 底部触控板面板（本体）：霓虹边框背景 + 内嵌 TrackpadView 直接处理手势（仅在已连接副屏时显示） */
+    /** 底部触控板（本体）：内嵌 TrackpadView 直接处理手势，分区高亮由 View 自绘（常驻显示） */
     @Composable
     private fun TrackpadPanel(modifier: Modifier) {
         val context = LocalContext.current
         val trackpadView = remember {
             TrackpadView(context).apply { listener = trackpadListener }
         }
+        // 边缘分区实时同步：设置弹窗改动 → 状态变化 → 重组 → 此处写入 View
+        val edgeRatio = TrackpadSettings.edgeRatio
+        val bottomStripPx = with(LocalDensity.current) { TrackpadSettings.bottomStripDp.dp.toPx() }
         Box(
             modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
+                .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                .background(HudPanel)
         ) {
-            // 可拉伸霓虹边框素材（自带点阵背景），拉伸铺满面板
-            Image(
-                painter = painterResource(R.drawable.hud_border),
-                contentDescription = null,
-                contentScale = ContentScale.FillBounds,
-                modifier = Modifier.matchParentSize()
-            )
-            // 触控板本体：边框图之上接收手势
+            // 触控板本体：滚动区高亮与分界线由 TrackpadView 自绘
             AndroidView(
                 factory = { trackpadView },
+                update = {
+                    it.edgeRatio = edgeRatio
+                    it.bottomStripPx = bottomStripPx
+                },
                 modifier = Modifier.matchParentSize()
             )
             // 左下/右下角「关闭应用」按钮：直接结束副屏当前应用，角落固定位置便于盲操作

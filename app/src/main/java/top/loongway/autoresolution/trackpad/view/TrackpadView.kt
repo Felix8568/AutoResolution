@@ -42,9 +42,33 @@ class TrackpadView @JvmOverloads constructor(
 
         /** 原地长按判定：按住不动超过该时长进入拖动模式（ms） */
         const val LONG_PRESS_MS = 500L
+
+        /** 底部横滚条固定高度（dp）：不随触控板高度缩放，拖高触控板只改变中心区 */
+        const val BOTTOM_STRIP_DP = 64f
     }
 
     var listener: TrackpadListener? = null
+
+    /**
+     * 边缘滚动区宽度比例（仅左右两侧，设置实时可调，默认 15%）。
+     * setter 内同步重画分区提示并更新系统手势排除区，保证“看到的就是判定的”。
+     */
+    var edgeRatio: Float = TrackpadZone.EDGE_RATIO_X
+        set(value) {
+            if (field == value) return
+            field = value
+            updateGestureExclusionRects()
+            invalidate()
+        }
+
+    /** 底部横滚区像素高度（设置可调，dp→px 转换，与触控板高度解耦） */
+    var bottomStripPx: Float = BOTTOM_STRIP_DP * resources.displayMetrics.density
+        set(value) {
+            if (field == value) return
+            field = value
+            updateGestureExclusionRects()
+            invalidate()
+        }
 
     /**
      * 轻点位移阈值：系统标准 touchSlop（随屏幕密度缩放，约 8dp）。
@@ -91,7 +115,7 @@ class TrackpadView @JvmOverloads constructor(
                 multiTouch = false
                 // 分区锁定：以按下瞬间的位置决定本次手势职责；
                 // 手指中途划入其它分区不切换指令类型（避免移动/滚动互相窜扰）
-                zone = TrackpadZone.of(event.x, event.y, width, height)
+                zone = TrackpadZone.of(event.x, event.y, width, height, edgeRatio, bottomStripPx)
                 dragging = false
                 // 中心区原地长按 → 拖动模式；边缘区 = 真实滑动手势：按下瞬间按按压位置
                 // 重定位触点（对应轴），再按下"虚拟手指"，滑动跟手、抬起结束
@@ -230,11 +254,11 @@ class TrackpadView @JvmOverloads constructor(
     private fun updateGestureExclusionRects() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         if (width <= 0 || height <= 0) return
-        val stripW = (width * TrackpadZone.EDGE_RATIO_X).toInt()
-        val bottomH = (height * TrackpadZone.EDGE_RATIO_Y).toInt()
+        val stripW = (width * edgeRatio).toInt()
+        val stripBottom = height - bottomStripPx.toInt()
         systemGestureExclusionRects = listOf(
-            Rect(0, 0, stripW, height - bottomH),
-            Rect(width - stripW, 0, width, height - bottomH),
+            Rect(0, 0, stripW, stripBottom),
+            Rect(width - stripW, 0, width, stripBottom),
         )
     }
 
@@ -244,9 +268,9 @@ class TrackpadView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
         // 与 TrackpadZone.of 完全同源的边界计算，保证“看到的就是判定的”
-        val leftBound = w * TrackpadZone.EDGE_RATIO_X
-        val rightBound = w * (1f - TrackpadZone.EDGE_RATIO_X)
-        val bottomBound = h * (1f - TrackpadZone.EDGE_RATIO_Y)
+        val leftBound = w * edgeRatio
+        val rightBound = w * (1f - edgeRatio)
+        val bottomBound = h - bottomStripPx
 
         // 三块边缘区域淡淡提亮，提示可滚动范围
         canvas.drawRect(0f, 0f, leftBound, bottomBound, zonePaint)
