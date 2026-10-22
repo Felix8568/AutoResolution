@@ -10,5 +10,10 @@ interface IDisplayControl {
     boolean setBrightnessToSurfaceControl(float brightness) = 2;
     boolean setBrightnessToSetting(int brightness) = 3;
     boolean setBrightnessModeToSetting(int mode) = 4;
+    /**
+     * 让输入法显示在 [displayId] 对应的外接屏上：该屏 IME 策略改为与主屏一致。
+     * 外接屏默认策略是「回落主屏」，输入框一点键盘就弹在手机上。
+     */
+    boolean showImeOnDisplay(int displayId) = 5;
     void destroy() = 16777114;
 }

@@ -1,6 +1,8 @@
 package top.loongway.autoresolution
 
+import android.app.Activity
 import android.content.pm.PackageManager
+import android.util.Log
 import android.widget.Toast
 import android.hardware.display.DisplayManager
 import android.os.Bundle
@@ -49,6 +51,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -65,6 +69,7 @@ import top.loongway.autoresolution.trackpad.cursor.SecondaryDisplayController
 import top.loongway.autoresolution.trackpad.gesture.TrackpadListener
 import top.loongway.autoresolution.trackpad.inject.InputInjector
 import top.loongway.autoresolution.trackpad.inject.ShellInputInjector
+import top.loongway.autoresolution.trackpad.view.TouchBridgeWindow
 import top.loongway.autoresolution.trackpad.view.TrackpadView
 import top.loongway.autoresolution.ui.theme.AutoResolutionTheme
 import top.loongway.autoresolution.ui.theme.HudBg
@@ -89,15 +94,18 @@ class MainActivity : ComponentActivity() {
         // 触控板常驻主界面：保持屏幕常亮
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // 拦截返回键：副屏被其它应用覆盖时注入返回；焦点仍在启动页时无动作
-        // （在启动页上注入 BACK 会被系统当成退出显示模式，XREAL 会切回镜像）
+        // （在启动页上注入 BACK 会被系统当成退出显示模式，XREAL 会切回镜像）。
+        // 兜底捕获异常：快速连续返回会并发多次注入，任何一处出错都不应导致崩溃
         onBackPressedDispatcher.addCallback(this) {
-            if (SecondaryDisplayController.hasSecondaryDisplay() &&
-                !SecondaryDisplayController.isLauncherTop()
-            ) {
-                ShellInputInjector.back(SecondaryDisplayController.displayId)
-            } else if (!SecondaryDisplayController.hasSecondaryDisplay()) {
-                finish()
-            }
+            runCatching {
+                if (SecondaryDisplayController.hasSecondaryDisplay() &&
+                    !SecondaryDisplayController.isLauncherTop()
+                ) {
+                    ShellInputInjector.back(SecondaryDisplayController.displayId)
+                } else if (!SecondaryDisplayController.hasSecondaryDisplay()) {
+                    finish()
+                }
+            }.onFailure { Log.e("MainActivity", "back dispatch failed", it) }
         }
         // 幂等绑定注入服务：后台监听未启动时触控板也能独立工作；
         // 预热 Shell 服务，避免首次跨屏启动退回框架路线
@@ -527,7 +535,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 底部触控板（本体）：内嵌 TrackpadView 直接处理手势，分区高亮由 View 自绘（常驻显示） */
+    /**
+     * 底部触控板（本体）：内嵌 TrackpadView 处理手势，分区高亮由 View 自绘（常驻显示）。
+     *
+     * 真实触摸不直接交给主窗口：触摸会让主窗口抢到全局焦点，眼镜侧输入框的键盘
+     * 随即消失；主窗口声明为不可聚焦又会引发返回键 ANR。所以由 [TouchBridgeWindow]
+     * （不可聚焦的子窗口）接收面板区域的触摸并转发回来——焦点不动，手势逻辑不变。
+     */
     @Composable
     private fun TrackpadPanel(modifier: Modifier) {
         val context = LocalContext.current
@@ -537,11 +551,16 @@ class MainActivity : ComponentActivity() {
         // 边缘分区实时同步：设置弹窗改动 → 状态变化 → 重组 → 此处写入 View
         val edgeRatio = TrackpadSettings.edgeRatio
         val bottomStripPx = with(LocalDensity.current) { TrackpadSettings.bottomStripDp.dp.toPx() }
+        val bridge = remember { TouchBridgeWindow(context as Activity, window.decorView) }
         Box(
             modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                 .background(HudPanel)
+                .onGloballyPositioned { coords ->
+                    val b = coords.boundsInWindow()
+                    bridge.setFrame(b.left.toInt(), b.top.toInt(), b.width.toInt(), b.height.toInt())
+                }
         ) {
             // 触控板本体：滚动区高亮与分界线由 TrackpadView 自绘
             AndroidView(
@@ -556,6 +575,7 @@ class MainActivity : ComponentActivity() {
             CloseCornerButton(Modifier.align(Alignment.BottomStart))
             CloseCornerButton(Modifier.align(Alignment.BottomEnd))
         }
+        DisposableEffect(Unit) { onDispose { bridge.detach() } }
     }
 
     /** 角落关闭按钮：红色描边圆钮 ✕，贴屏幕最角落便于盲操作 */

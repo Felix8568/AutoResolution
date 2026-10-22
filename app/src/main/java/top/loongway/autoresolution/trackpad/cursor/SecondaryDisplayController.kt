@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.Display
 import android.view.MotionEvent
 import android.widget.Toast
+import top.loongway.autoresolution.ResolutionManager
 import top.loongway.autoresolution.trackpad.gesture.TrackpadZone
 import top.loongway.autoresolution.trackpad.launcher.LauncherActivity
 import top.loongway.autoresolution.trackpad.a11y.CursorAccessibilityService
@@ -34,6 +35,9 @@ object SecondaryDisplayController {
 
     /** 无触摸多久后隐藏触点 */
     private const val HIDE_DELAY_MS = 3_000L
+
+    /** 眼镜接入时 shell 服务尚未绑定，命令会被丢弃；等多久后重试一次 */
+    private const val TRACKPAD_LAUNCH_RETRY_MS = 1_500L
 
     /** 热插拔竞态重试：新 display 的无障碍窗口 token 注册滞后于 DisplayListener */
     private const val A11Y_RETRY_DELAY_MS = 800L
@@ -70,6 +74,22 @@ object SecondaryDisplayController {
 
     fun hasSecondaryDisplay(): Boolean = displayId != Display.INVALID_DISPLAY
 
+    /**
+     * 手机同步进入触控板：把主界面拉到前台。程序在后台运行时眼镜接入，副屏
+     * 启动页有了，触控板却不会自己到前台——Android 10+ 禁止应用在后台启动
+     * Activity，所以借 shell 身份执行。必须显式指定 --display 0：实测省略时
+     * HyperOS 会把它启动到眼镜屏上。命令已在前台时 single-top 只是走一遍
+     * onNewIntent，重复调用没有副作用。
+     */
+    private fun launchTrackpad(ctx: Context, retried: Boolean = false) {
+        val cmd = "am start --display 0 --activity-single-top -n ${ctx.packageName}/.MainActivity"
+        ResolutionManager.execShellAsync(cmd) { result ->
+            if (!result.startsWith("error") || retried) return@execShellAsync
+            Log.w(TAG, "trackpad launch dropped (shell not ready), retry in ${TRACKPAD_LAUNCH_RETRY_MS}ms")
+            handler.postDelayed({ launchTrackpad(ctx, retried = true) }, TRACKPAD_LAUNCH_RETRY_MS)
+        }
+    }
+
     // ---- 生命周期 ----
 
     fun start(context: Context) {
@@ -101,6 +121,9 @@ object SecondaryDisplayController {
             "flags=0x${display.flags.toString(16)}")
         warnIfDegradedMode(display)
         displayId = display.displayId
+        // 键盘跟随该屏的 IME 策略：外接屏默认「回落主屏」（在副屏应用里点输入框，
+        // 键盘会弹到手机上），接入时经 Shizuku 改为本地显示
+        ResolutionManager.applySecondaryImePolicy(display.displayId)
         // 触点优先挂无障碍可信 overlay，不可用时内嵌在启动页 Activity 里兜底
         a11yCursor = CursorAccessibilityService.isAvailable() &&
             CursorAccessibilityService.attachCursor(display)
@@ -119,6 +142,8 @@ object SecondaryDisplayController {
         }
         // 副屏启动页：普通 Activity，应用盖上来、返回回落（Presentation 会压住应用）
         LauncherActivity.startOnDisplay(ctx, display.displayId)
+        // 手机同步进入触控板（详见 launchTrackpad 注释）
+        launchTrackpad(ctx)
     }
 
     /**

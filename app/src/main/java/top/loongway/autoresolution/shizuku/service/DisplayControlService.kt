@@ -1,9 +1,11 @@
 package top.loongway.autoresolution.shizuku.service
 
 import android.util.Log
+import android.view.Display
 import top.loongway.autoresolution.shizuku.IDisplayControl
 import top.loongway.autoresolution.shizuku.proxy.DisplayControlProxy
 import top.loongway.autoresolution.shizuku.proxy.SurfaceControlProxy
+import top.loongway.autoresolution.shizuku.proxy.WindowManagerProxy
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
@@ -54,6 +56,24 @@ class DisplayControlService : IDisplayControl.Stub() {
 
     override fun setBrightnessModeToSetting(mode: Int): Boolean =
         execSetting("screen_brightness_mode", mode.toString())
+
+    /**
+     * 让输入法显示在 [displayId] 外接屏上：把该屏的 IME 策略改成与主屏一致
+     * （策略的常量数值没有公开，主屏永远是"在本屏显示"，运行时读它的值做参照）。
+     * 部分 ROM 删掉了对应的 shell 命令，但底层接口通常还在；
+     * 策略由系统按显示器持久化，重新插拔不用重新设置。
+     */
+    override fun showImeOnDisplay(displayId: Int): Boolean {
+        return try {
+            val local = WindowManagerProxy.getDisplayImePolicy(Display.DEFAULT_DISPLAY)
+            WindowManagerProxy.setDisplayImePolicy(displayId, local)
+            Log.i(TAG, "ime policy display $displayId -> $local (copied from default display)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "showImeOnDisplay($displayId) failed (API removed or not permitted)", e)
+            false
+        }
+    }
 
     private fun execSetting(key: String, value: String): Boolean {
         return try {

@@ -94,6 +94,7 @@ object ResolutionManager {
 
     fun stop() {
         isStarted = false
+        pendingImeDisplayId = Display.INVALID_DISPLAY
         unregisterDisplayListener()
         unregisterScreenOffReceiver()
         restoreScreenNow() // 必须在解绑前恢复，shell 进程被回收后无法再恢复亮度
@@ -147,8 +148,16 @@ object ResolutionManager {
             return
         }
         Thread {
-            val result = shell.exec(command)
-            if (onResult != null) handler.post { onResult(result) }
+            // 服务进程重启或被杀的瞬间，binder 调用会抛 DeadObjectException；
+            // 未捕获的线程异常会导致整个应用退出，必须捕获并把失败告知调用方
+            runCatching { shell.exec(command) }
+                .onSuccess { result ->
+                    if (onResult != null) handler.post { onResult(result) }
+                }
+                .onFailure { e ->
+                    Log.e(TAG, "shell exec failed: $command", e)
+                    onResult?.let { cb -> handler.post { cb("error: ${e.message}") } }
+                }
         }.start()
     }
 
@@ -196,7 +205,7 @@ object ResolutionManager {
         // AIDL/实现有变更时必须提版本号，否则 Shizuku 会继续跑旧进程旧代码
         dcArgs = serviceArgs(
             "top.loongway.autoresolution.shizuku.service.DisplayControlService",
-            DisplayControlService.TAG, 2
+            DisplayControlService.TAG, 3
         )
         dcConn = ServiceConn(
             onConnected = { binder ->
@@ -204,6 +213,9 @@ object ResolutionManager {
                 // 绑定可能晚于眼镜接入触发的 refresh（彼时 displayControl 还是 null，
                 // turnScreenOff 会静默跳过），绑完补判一次息屏，闭合时序空洞
                 handler.post { refresh() }
+                // 同理：眼镜接入时服务可能还没绑好，绑完后把记录的 IME 策略补做一遍
+                pendingImeDisplayId.takeIf { it != Display.INVALID_DISPLAY }
+                    ?.let { applySecondaryImePolicy(it) }
             },
             onDisconnected = { displayControl = null }
         )
@@ -214,6 +226,27 @@ object ResolutionManager {
         val a = dcArgs ?: return; val c = dcConn ?: return
         Shizuku.unbindUserService(a, c, true)
         dcArgs = null; dcConn = null; displayControl = null
+    }
+
+    // ---- Secondary display IME policy ----
+
+    /** 眼镜接入时 DisplayControl 服务可能尚未绑定，先记住副屏 displayId，绑定完成后补做 */
+    @Volatile private var pendingImeDisplayId: Int = Display.INVALID_DISPLAY
+
+    /**
+     * 让键盘显示在副屏（眼镜）上。外接屏的 IME 策略默认是「回落主屏」，在副屏
+     * 应用里点输入框，键盘会弹到手机上；这里经 DisplayControl 服务把该屏策略
+     * 改成与主屏一致。策略由系统按显示器持久化，重新插拔不用重新设置。
+     * 服务尚未绑定时只记录，绑定完成后自动补做；可重复调用。
+     */
+    fun applySecondaryImePolicy(displayId: Int) {
+        pendingImeDisplayId = displayId
+        val dc = displayControl ?: run { bindDisplayControl(); return }
+        Thread {
+            runCatching { dc.showImeOnDisplay(displayId) }
+                .onSuccess { ok -> Log.i(TAG, "secondary ime policy display=$displayId ok=$ok") }
+                .onFailure { Log.e(TAG, "applySecondaryImePolicy($displayId) failed", it) }
+        }.start()
     }
 
     // ---- Screen control ----
